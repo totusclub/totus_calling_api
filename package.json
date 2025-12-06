@@ -1,0 +1,21 @@
+{
+  "name": "totus-backend",
+  "version": "1.0.0",
+  "description": "VoIP push + WebRTC signaling backend for Totus React Native app",
+  "main": "index.js",
+  "scripts": {
+    "start": "NODE_ENV=development node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1",
+    "apn": "^2.2.0",
+    "body-parser": "^1.20.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.1",
+    "uuid": "^9.0.1",
+    "mysql2": "^3.6.0"
+  }
+}
+
+
