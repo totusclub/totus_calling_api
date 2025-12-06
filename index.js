@@ -28,22 +28,35 @@ const io = new Server(server, {
   },
 });
 
+// Trust proxy (important if behind reverse proxy/load balancer)
+app.set('trust proxy', true);
+
+// Handle OPTIONS requests FIRST - before any other middleware
+// This prevents redirects from breaking CORS preflight
+app.options('*', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Max-Age', '86400'); // 24 hours
+  return res.sendStatus(200);
+});
+
 // CORS configuration - allow all origins for development and production
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   credentials: false,
+  preflightContinue: false,
+  optionsSuccessStatus: 200,
 }));
-
-// Handle preflight requests explicitly
-app.options('*', cors());
 
 // Additional CORS headers middleware as backup
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  // Don't redirect OPTIONS requests
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
