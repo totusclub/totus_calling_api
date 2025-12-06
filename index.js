@@ -28,7 +28,28 @@ const io = new Server(server, {
   },
 });
 
-app.use(cors());
+// CORS configuration - allow all origins for development and production
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: false,
+}));
+
+// Handle preflight requests explicitly
+app.options('*', cors());
+
+// Additional CORS headers middleware as backup
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(bodyParser.json());
 // Simple request logger so you can see every hit
 app.use((req, res, next) => {
