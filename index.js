@@ -19,6 +19,8 @@ const apn = require('apn');
 const http = require('http');
 const {Server} = require('socket.io');
 const {userDb} = require('./db');
+const {synthesizeSpeech, synthesizeSpeechToFile} = require('./ttsService');
+const axios = require('axios');
 
 const app = express();
 const server = http.createServer(app);
@@ -102,7 +104,7 @@ const providerOpts = {
     keyId: '2X2QV7S43J',
     teamId: 'C6258722D6',
   },
-  production: true, // false = sandbox / development
+  production: false, // false = sandbox / development
 };
 
 const apnProvider = new apn.Provider(providerOpts);
@@ -1066,6 +1068,264 @@ io.on('connection', socket => {
       console.log('Socket disconnected', socket.id);
     }
   });
+});
+
+// ======================
+// Text-to-Speech (TTS) API
+// ======================
+
+// Synthesize speech from text
+// POST /api/tts/synthesize
+// body: { text: string, languageCode?: string, ssmlGender?: 'FEMALE' | 'MALE' | 'NEUTRAL', audioEncoding?: 'MP3' | 'LINEAR16' | 'OGG_OPUS', voiceName?: string }
+// Returns: { ok: true, audioContent: string (base64), audioSize: number }
+app.post('/api/tts/synthesize', async (req, res) => {
+  try {
+    const {text, languageCode, ssmlGender, audioEncoding, voiceName} = req.body || {};
+    
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
+      return res.status(400).json({error: 'text is required and must be a non-empty string'});
+    }
+
+    console.log('[TTS API] Synthesizing speech request:', {
+      textLength: text.length,
+      languageCode: languageCode || 'ru-RU',
+      ssmlGender: ssmlGender || 'FEMALE',
+      audioEncoding: audioEncoding || 'MP3',
+      voiceName: voiceName || 'default',
+    });
+
+    const options = {
+      languageCode: languageCode || 'ru-RU',
+      ssmlGender: ssmlGender || 'FEMALE',
+      audioEncoding: audioEncoding || 'MP3',
+      voiceName: voiceName || null,
+    };
+
+    const audioContent = await synthesizeSpeech(text, options);
+    
+    // Convert Buffer to base64 for JSON response
+    const audioBase64 = audioContent.toString('base64');
+
+    res.json({
+      ok: true,
+      audioContent: audioBase64,
+      audioSize: audioContent.length,
+      audioEncoding: options.audioEncoding,
+      languageCode: options.languageCode,
+    });
+  } catch (error) {
+    console.error('[TTS API] Error:', error);
+    res.status(500).json({
+      error: 'Failed to synthesize speech: ' + error.message,
+    });
+  }
+});
+
+// Synthesize speech and save to file (for server-side file generation)
+// POST /api/tts/synthesize-to-file
+// body: { text: string, outputPath?: string, languageCode?: string, ssmlGender?: 'FEMALE' | 'MALE' | 'NEUTRAL', audioEncoding?: 'MP3' | 'LINEAR16' | 'OGG_OPUS', voiceName?: string }
+// Returns: { ok: true, filePath: string }
+app.post('/api/tts/synthesize-to-file', async (req, res) => {
+  try {
+    const {text, outputPath, languageCode, ssmlGender, audioEncoding, voiceName} = req.body || {};
+    
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
+      return res.status(400).json({error: 'text is required and must be a non-empty string'});
+    }
+
+    const defaultOutputPath = path.join(__dirname, 'tts-output', `tts-${Date.now()}.mp3`);
+
+    console.log('[TTS API] Synthesizing speech to file request:', {
+      textLength: text.length,
+      outputPath: outputPath || defaultOutputPath,
+      languageCode: languageCode || 'ru-RU',
+      ssmlGender: ssmlGender || 'FEMALE',
+      audioEncoding: audioEncoding || 'MP3',
+      voiceName: voiceName || 'default',
+    });
+
+    const options = {
+      languageCode: languageCode || 'ru-RU',
+      ssmlGender: ssmlGender || 'FEMALE',
+      audioEncoding: audioEncoding || 'MP3',
+      voiceName: voiceName || null,
+    };
+
+    const filePath = await synthesizeSpeechToFile(text, outputPath || defaultOutputPath, options);
+
+    res.json({
+      ok: true,
+      filePath: filePath,
+    });
+  } catch (error) {
+    console.error('[TTS API] Error:', error);
+    res.status(500).json({
+      error: 'Failed to synthesize speech to file: ' + error.message,
+    });
+  }
+});
+
+// ======================
+// DeepSeek + Google TTS Combined API
+// ======================
+
+// DeepSeek API configuration
+const DEEPSEEK_API_KEY = '';
+const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
+
+// System prompt for tour agent assistant
+const DEEPSEEK_SYSTEM_PROMPT = `Ты профессиональный туристический агент-помощник. Твоя задача - помочь пользователям найти идеальные туры и путешествия.
+
+Твои возможности:
+- Задавай уточняющие вопросы о предпочтениях пользователя (бюджет, даты, тип отдыха, количество человек)
+- Рекомендуй конкретные направления и туры
+- Предоставляй информацию о ценах, длительности, особенностях туров
+- Отвечай на русском языке дружелюбно и профессионально
+- Если пользователь спрашивает о турах, предоставь конкретные рекомендации в формате:
+  "1. [Название тура] - [Направление] - [Цена] рублей - [Длительность] дней - [Описание]"
+
+Пример ответа с турами:
+"Отлично, я нашел несколько вариантов для вас:
+Отдых в Дубае - Дубай, ОАЭ - 85000 рублей - 7 дней - Роскошный отдых с посещением небоскребов и пляжей.
+Пляжный отдых в Турции - Анталия, Турция - 45000 рублей - 5 дней - Все включено, идеально для семейного отдыха.
+Экскурсионный тур по Египту - Каир, Египет - 55000 рублей - 6 дней - Погружение в историю древних цивилизаций."
+
+Если туры не найдены или запрос неясен, отвечай вежливо и предлагай уточнить запрос.`;
+
+/**
+ * Call DeepSeek API
+ */
+async function callDeepSeekAPI(userMessage, conversationHistory = []) {
+  try {
+    const messages = [
+      { role: 'system', content: DEEPSEEK_SYSTEM_PROMPT },
+      ...conversationHistory,
+      { role: 'user', content: userMessage },
+    ];
+
+    const response = await axios.post(
+      DEEPSEEK_API_URL,
+      {
+        model: 'deepseek-chat',
+        messages: messages,
+        temperature: 0.7,
+        max_tokens: 400,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+        },
+        timeout: 30000, // 30 seconds timeout
+      }
+    );
+
+    if (response.data && response.data.choices && response.data.choices.length > 0) {
+      return response.data.choices[0].message.content;
+    }
+
+    throw new Error('No response from DeepSeek API');
+  } catch (error) {
+    console.error('[DeepSeek API] Error:', error);
+    if (error.response) {
+      throw new Error(`DeepSeek API error: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
+    }
+    throw new Error(`DeepSeek API request failed: ${error.message}`);
+  }
+}
+
+/**
+ * Parse tour recommendations from DeepSeek response
+ */
+function parseTourRecommendations(responseText) {
+  const tours = [];
+  const tourPattern = /(\d+)\.\s*([^-]+?)\s*-\s*([^-]+?)\s*-\s*(\d+)\s*(?:тысяч|тыс\.?|рублей|руб\.?)\s*-\s*(\d+)\s*(?:дней|дня|день)/gi;
+  
+  let match;
+  let id = 1;
+  
+  while ((match = tourPattern.exec(responseText)) !== null) {
+    const title = match[2].trim();
+    const dest = match[3].trim();
+    const priceStr = match[4].trim();
+    const daysStr = match[5].trim();
+    
+    let price = parseInt(priceStr, 10);
+    if (match[0].includes('тысяч') || match[0].includes('тыс')) {
+      price = price * 1000;
+    }
+    
+    const days = parseInt(daysStr, 10);
+    
+    if (title && dest && !isNaN(price) && !isNaN(days)) {
+      tours.push({
+        id: id++,
+        title,
+        dest,
+        price,
+        days,
+      });
+    }
+  }
+
+  return tours;
+}
+
+// Combined DeepSeek + Google TTS endpoint
+// POST /api/tour-assistant
+// body: { text: string, conversationHistory?: Array<{role: string, content: string}> }
+// Returns: { ok: true, audioContent: string (base64), audioSize: number, textResponse: string, tours: Array }
+app.post('/api/tour-assistant', async (req, res) => {
+  try {
+    const {text, conversationHistory = []} = req.body || {};
+    
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
+      return res.status(400).json({error: 'text is required and must be a non-empty string'});
+    }
+
+    console.log('[Tour Assistant] Request received:', {
+      textLength: text.length,
+      conversationHistoryLength: conversationHistory.length,
+    });
+
+    // Step 1: Call DeepSeek API
+    console.log('[Tour Assistant] Calling DeepSeek API...');
+    const deepSeekResponse = await callDeepSeekAPI(text, conversationHistory);
+    console.log('[Tour Assistant] DeepSeek response received:', deepSeekResponse.substring(0, 100) + '...');
+
+    // Step 2: Parse tour recommendations
+    const tours = parseTourRecommendations(deepSeekResponse);
+
+    // Step 3: Convert text to speech using Google TTS
+    console.log('[Tour Assistant] Converting to speech with Google TTS...');
+    const audioContent = await synthesizeSpeech(deepSeekResponse, {
+      languageCode: 'ru-RU',
+      ssmlGender: 'FEMALE',
+      audioEncoding: 'MP3',
+    });
+
+    // Step 4: Convert Buffer to base64
+    const audioBase64 = audioContent.toString('base64');
+
+    console.log('[Tour Assistant] ✅ Success:', {
+      audioSize: audioContent.length,
+      toursCount: tours.length,
+    });
+
+    res.json({
+      ok: true,
+      audioContent: audioBase64,
+      audioSize: audioContent.length,
+      audioEncoding: 'MP3',
+      textResponse: deepSeekResponse,
+      tours: tours,
+    });
+  } catch (error) {
+    console.error('[Tour Assistant] Error:', error);
+    res.status(500).json({
+      error: 'Failed to process tour assistant request: ' + error.message,
+    });
+  }
 });
 
 // ======================
