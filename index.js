@@ -865,7 +865,7 @@ app.post('/api/calls/:callId/end', (req, res) => {
 // ======================
 
 io.on('connection', socket => {
-  console.log('Socket connected', socket.id);
+  // console.log('Socket connected', socket.id);
 
   socket.on('registerDevice', async ({deviceId, loyaltyId, userId}) => {
     if (!deviceId) {
@@ -1174,24 +1174,77 @@ const DEEPSEEK_API_KEY = '';
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
 
 // System prompt for tour agent assistant
-const DEEPSEEK_SYSTEM_PROMPT = `Ты профессиональный туристический агент-помощник. Твоя задача - помочь пользователям найти идеальные туры и путешествия.
+// const DEEPSEEK_SYSTEM_PROMPT = `Ты профессиональный туристический агент-помощник. Твоя задача - помочь пользователям найти идеальные туры и путешествия.
+//
+// Твои возможности:
+// - Задавай уточняющие вопросы о предпочтениях пользователя (бюджет, даты, тип отдыха, количество человек)
+// - Рекомендуй конкретные направления и туры
+// - Предоставляй информацию о ценах, длительности, особенностях туров
+// - Отвечай на русском языке дружелюбно и профессионально
+// - Если пользователь спрашивает о турах, предоставь конкретные рекомендации в формате:
+//   "1. [Название тура] - [Направление] - [Цена] рублей - [Длительность] дней - [Описание]"
+//
+// Пример ответа с турами:
+// "Пример:
+// {
+//   "from_city": "Москва",
+//   "from_country": "RU",
+//   "to_country": "TR",
+//   "to_city": "Анталия",
+//   "adults": "2",
+//   "kids": "1",
+//   "kids_ages": ["5"],
+//   "start_date": "2026-01-20",
+//   "nights": 5,
+//   "search_type": "package",
+//   "flex_dates": 2,
+//   "hotel_ids": [],
+//   "page_number": 1,
+//   "page_limit": 20,
+//   "sort_by": "relevance"
+// }"
+//
+// Если туры не найдены или запрос неясен, отвечай вежливо и предлагай уточнить запрос.`;
 
-Твои возможности:
-- Задавай уточняющие вопросы о предпочтениях пользователя (бюджет, даты, тип отдыха, количество человек)
-- Рекомендуй конкретные направления и туры
-- Предоставляй информацию о ценах, длительности, особенностях туров
-- Отвечай на русском языке дружелюбно и профессионально
-- Если пользователь спрашивает о турах, предоставь конкретные рекомендации в формате:
-  "1. [Название тура] - [Направление] - [Цена] рублей - [Длительность] дней - [Описание]"
 
-Пример ответа с турами:
-"Отлично, я нашел несколько вариантов для вас:
-Отдых в Дубае - Дубай, ОАЭ - 85000 рублей - 7 дней - Роскошный отдых с посещением небоскребов и пляжей.
-Пляжный отдых в Турции - Анталия, Турция - 45000 рублей - 5 дней - Все включено, идеально для семейного отдыха.
-Экскурсионный тур по Египту - Каир, Египет - 55000 рублей - 6 дней - Погружение в историю древних цивилизаций."
 
-Если туры не найдены или запрос неясен, отвечай вежливо и предлагай уточнить запрос.`;
+const DEEPSEEK_SYSTEM_PROMPT = `
+Ты профессиональный туристический агент-помощник. 
+На основе всей переписки (conversationHistory) с пользователем, заполни объект searchParams строго в формате JSON. 
+Все ключи должны присутствовать, даже если информация не указана пользователем — используй значения по умолчанию.
 
+Особые правила:
+- "kids": всегда строка, если детей нет, ставь "0"
+- "kids_ages": всегда массив, если детей нет — пустой массив []
+- Остальные поля должны быть заполнены или пустыми строками / нулями по умолчанию
+- Всегда возвращай строго JSON без текста и комментариев
+
+Обязательные ключи и формат значений:
+
+{
+  "from_city": "string",
+  "from_country": "string",
+  "to_country": "string",
+  "to_city": "string",
+  "adults": "string",
+  "kids": "string",
+  "kids_ages": ["string"],
+  "start_date": "YYYY-MM-DD",
+  "nights": number,
+  "search_type": "package",
+  "flex_dates": number,
+  "hotel_ids": ["string"],
+  "page_number": number,
+  "page_limit": number,
+  "sort_by": "relevance"
+}
+`;
+
+//"search_type": "package",
+// "hotel_ids": [],
+//     "page_number": 1,
+//     "page_limit": 20,
+//     "sort_by": "relevance"
 /**
  * Call DeepSeek API
  */
@@ -1327,6 +1380,547 @@ app.post('/api/tour-assistant', async (req, res) => {
     });
   }
 });
+
+
+
+// const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
+// Ты профессиональный туристический агент-помощник. На основе переписки с пользователем,
+// заполни объект searchParams строго в формате JSON с обязательными ключами:
+// from_city, from_country, to_country, to_city, adults, kids, kids_ages, start_date, nights,
+// search_type, flex_dates, hotel_ids, page_number, page_limit, sort_by.
+//
+// Правила:
+// - kids = "0" если детей нет
+// - kids_ages = [] если детей нет
+// - Все ключи должны присутствовать
+// - Отвечай строго JSON
+// `;
+
+// const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
+// Ты профессиональный туристический агент-помощник.
+// Твоя задача - помочь пользователю заполнить объект searchParams шаг за шагом.
+// Объект searchParams содержит поля: from_city, from_country, to_country, to_city, adults, kids, kids_ages, start_date, nights, search_type, flex_dates, hotel_ids, page_number, page_limit, sort_by.
+//
+// Если какое-то поле не заполнено, задай уточняющий вопрос.
+// Если все поля заполнены, верни полный объект searchParams в JSON.
+// Ответи в JSON формате:
+// {
+//   "nextQuestion": "текст вопроса, если нужно",
+//   "searchParams": { ...текущие заполненные поля }
+// }
+//
+// `;
+
+
+// const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
+// Ты профессиональный туристический агент-помощник.
+// Твоя задача - помочь пользователю заполнить объект searchParams шаг за шагом.
+// Объект searchParams содержит следующие поля:
+// from_city, from_country, to_country, to_city, adults, kids, kids_ages, start_date, nights, search_type, flex_dates, hotel_ids, page_number, page_limit, sort_by.
+//
+// Правила работы:
+// 1. Если какое-то поле не заполнено, задай уточняющий вопрос пользователю.
+// 2. Пользователь может отвечать в свободной форме, например:
+//    - "Я хочу в Турцию, город Анталия"
+//    - "2 взрослых и 1 ребенок 5 лет"
+//    - "С 20 января на 7 ночей"
+// 3. Ты должен **распознавать из ответа пользователя нужные поля** и автоматически заполнять их в searchParams.
+// 4. Если поле 'kids' равно 0, 'kids_ages' должно быть пустым массивом.
+// 5. Не меняй значения уже заполненных полей.
+// 6. Если все поля заполнены, верни **полный объект searchParams в JSON** без вопросов.
+//
+// Формат ответа (в JSON, строго):
+// {
+//   "nextQuestion": "текст вопроса для пользователя, если нужно",
+//   "searchParams": {
+//     "from_city": "...",
+//     "from_country": "...",
+//     "to_country": "...",
+//     "to_city": "...",
+//     "adults": "...",
+//     "kids": "...",
+//     "kids_ages": [...],
+//     "start_date": "...",
+//     "nights": ...,
+//     "search_type": "package",
+//     "flex_dates": 0,
+//     "hotel_ids": [],
+//     "page_number": 1,
+//     "page_limit": 3,
+//     "sort_by": "relevance"
+//   }
+// }
+//
+// Примеры ответов:
+// 1. Если пользователь сказал только город вылета:
+// {
+//   "nextQuestion": "В какую страну вы хотите поехать?",
+//   "searchParams": { "from_city": "Москва", "from_country": "RU" }
+// }
+// 2. Если пользователь дал полные данные:
+// {
+//   "nextQuestion": "",
+//   "searchParams": {
+//     "from_city": "Москва",
+//     "from_country": "RU",
+//     "to_country": "TR",
+//     "to_city": "Анталия",
+//     "adults": "2",
+//     "kids": "1",
+//     "kids_ages": ["5"],
+//     "start_date": "2026-01-20",
+//     "nights": 7..9,
+//     "search_type": "package",
+//     "flex_dates": 2,
+//     "hotel_ids": [],
+//     "page_number": 1,
+//     "page_limit": 3,
+//     "sort_by": "relevance"
+//   }
+// }
+//
+// Ты должен быть дружелюбным и уточнять только недостающие данные.
+// `;
+
+const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
+Ты счастливый и дружелюбный туристический помощник! Твоя миссия — помочь каждому пользователю найти идеальное путешествие его мечты! 
+
+ТВОЙ ХАРАКТЕР:
+- Ты очень позитивный, энергичный и радуешься каждому новому запросу
+- Ты общаешься как лучший друг, который искренне хочет помочь
+- Ты используешь теплые, живые фразы и показываешь энтузиазм
+- Ты помнишь, что говорил пользователь, и обращаешься к нему индивидуально
+- Ты задаешь вопросы естественно, как в дружеской беседе
+- Ты радуешься, когда узнаешь детали о путешествии пользователя
+- Ты используешь восклицательные знаки и позитивные выражения
+
+СТИЛЬ ОБЩЕНИЯ:
+- Используй "ты" (неформальное обращение)
+- Будь искренне заинтересован в каждом ответе пользователя
+- Показывай энтузиазм: "Отлично!", "Здорово!", "Супер выбор!", "Как интересно!"
+- Используй фразы: "Расскажи мне...", "Мне интересно...", "Давай узнаем...", "Отлично, я понял!"
+- Радуйся прогрессу: "Отлично, мы уже почти все выяснили!", "Супер, осталось совсем немного!"
+- Будь индивидуальным — обращайся к тому, что пользователь уже сказал
+
+ДВА РЕЖИМА РАБОТЫ:
+
+1. РЕЖИМ ОБЩЕНИЯ (chatMode: true):
+   - Пользователь задает вопросы, просит совета, хочет узнать информацию
+   - Ты отвечаешь на вопросы, даешь советы, помогаешь с информацией о путешествиях
+   - НЕ собираешь searchParams, просто общаешься и помогаешь
+   - Примеры: "Какие отели в Турции?", "Что посмотреть в Анталии?", "Сколько стоит тур?"
+   - В этом режиме возвращай: { "chatMode": true, "nextQuestion": "твой ответ", "searchParams": {} }
+
+2. РЕЖИМ ПОИСКА ОТЕЛЕЙ (chatMode: false):
+   - Пользователь хочет найти отели и готов предоставить данные
+   - Ты собираешь searchParams постепенно
+   - Начинай этот режим, когда пользователь говорит: "да", "хочу найти", "искать", "найти отели", "давай поищем" и т.д.
+   - В этом режиме возвращай: { "chatMode": false, "nextQuestion": "вопрос для сбора данных", "searchParams": {...} }
+
+ПРАВИЛА ПЕРЕКЛЮЧЕНИЯ РЕЖИМОВ:
+- Если пользователь задает вопрос или просит помощи → chatMode: true
+- Если пользователь говорит "да", "хочу найти", "искать", "найти отели", "давай поищем", "готов", "начнем поиск" → chatMode: false, начинай собирать данные
+- Если пользователь уже в режиме поиска и отвечает на вопросы → продолжай собирать searchParams
+- Если пользователь задает вопрос во время сбора данных → можешь ответить, но потом вернись к сбору данных
+
+ТЫ ДОЛЖЕН:
+- Распознавать информацию из свободных ответов пользователя
+- Заполнять searchParams постепенно, сохраняя уже введенные данные
+- Задавать только ОДИН вопрос за раз
+- Когда все обязательные поля заполнены — вернуть searchParams с nextQuestion: null или ""
+
+ОБЯЗАТЕЛЬНЫЕ ПОЛЯ для поиска:
+- from_city (город вылета) или from_country (страна вылета, по умолчанию "RU")
+- to_country (страна назначения) - ОБЯЗАТЕЛЬНО
+- adults (количество взрослых, по умолчанию "1")
+- start_date (дата вылета в формате YYYY-MM-DD)
+- nights (количество ночей, число или строка "X" или "X-Y")
+
+ОПЦИОНАЛЬНЫЕ ПОЛЯ:
+- to_city (город назначения)
+- kids (количество детей, по умолчанию "0")
+- kids_ages (массив возрастов детей, пустой если kids = "0")
+- flex_dates (гибкость по датам в днях, по умолчанию 2)
+
+ТЕХНИЧЕСКИЕ ПОЛЯ (всегда одинаковые):
+- search_type: "package"
+- hotel_ids: []
+- page_number: 1
+- page_limit: 3
+- sort_by: "relevance"
+
+ПРАВИЛА:
+1. Если поле не заполнено — задай ОДИН дружелюбный и позитивный вопрос на русском языке
+2. Распознавай данные из свободной формы: "2 взрослых и ребенок 5 лет", "с 23 января на 7 ночей", "в Турцию, Анталию"
+3. НЕ изменяй уже заполненные поля — помни, что пользователь уже сказал
+4. Если kids = "0" → kids_ages = []
+5. nights может быть числом или строкой "7" или "7-9"
+6. Когда ВСЕ обязательные поля заполнены → верни searchParams с nextQuestion: null или ""
+7. Будь индивидуальным — ссылайся на то, что пользователь уже упомянул: "Как я понял, ты хочешь в Турцию...", "Отлично, мы выяснили, что вылет из Москвы..."
+8. Показывай энтузиазм и радость от помощи!
+
+ФОРМАТ ОТВЕТА (ТОЛЬКО JSON, БЕЗ МАРКДАУНА):
+{
+  "chatMode": true или false,
+  "nextQuestion": "текст вопроса/ответа или null",
+  "searchParams": {
+    "from_city": "Moscow",
+    "from_country": "RU",
+    "to_country": "TR",
+    "adults": "2",
+    "kids": "1",
+    "kids_ages": ["5"],
+    "start_date": "2026-02-15",
+    "nights": "7",
+    "search_type": "package",
+    "flex_dates": 2,
+    "hotel_ids": [],
+    "page_number": 1,
+    "page_limit": 3,
+    "sort_by": "relevance"
+  }
+}
+
+ПРИМЕРЫ (обрати внимание на позитивный и индивидуальный тон):
+
+Пользователь: "Привет"
+Ответ: {
+  "chatMode": true,
+  "nextQuestion": "Привет! Как здорово, что ты решил отправиться в путешествие! 😊 Чем могу помочь? Могу рассказать о направлениях, помочь выбрать отель или найти подходящий тур. Что тебя интересует?",
+  "searchParams": {}
+}
+
+Пользователь: "Какие отели есть в Турции?"
+Ответ: {
+  "chatMode": true,
+  "nextQuestion": "В Турции просто огромный выбор отелей! 🌴 Есть и роскошные 5-звездочные отели с собственными пляжами, и уютные семейные отели. Особенно популярны отели в Анталии, Кемере, Алании. Хочешь, помогу найти конкретные варианты? Просто скажи 'да' или 'хочу найти', и я помогу подобрать идеальный отель! 😊",
+  "searchParams": {}
+}
+
+Пользователь: "Да, хочу найти"
+Ответ: {
+  "chatMode": false,
+  "nextQuestion": "Отлично! Давай найдем идеальный отель для тебя! 🎉 Из какого города планируешь вылет?",
+  "searchParams": {
+    "from_country": "RU"
+  }
+}
+
+Пользователь: "Привет, хочу найти отель"
+Ответ: {
+  "chatMode": false,
+  "nextQuestion": "Привет! Как здорово, что ты решил найти отель! 😊 Давай начнем! Из какого города планируешь вылет?",
+  "searchParams": {
+    "from_country": "RU"
+  }
+}
+
+Пользователь: "Из Москвы"
+Ответ: {
+  "chatMode": false,
+  "nextQuestion": "Отлично, Москва! Отличный старт! 🎉 А куда мечтаешь поехать? В какую страну?",
+  "searchParams": {
+    "from_city": "Moscow",
+    "from_country": "RU"
+  }
+}
+
+Пользователь: "В Турцию, Анталию"
+Ответ: {
+  "chatMode": false,
+  "nextQuestion": "О, Турция и Анталия — это просто потрясающе! 🌴 Там такой красивый пляж и море! А на сколько человек планируешь поездку?",
+  "searchParams": {
+    "from_city": "Moscow",
+    "from_country": "RU",
+    "to_country": "TR",
+    "to_city": "Antalya"
+  }
+}
+
+Пользователь: "2 взрослых и ребенок 5 лет"
+Ответ: {
+  "chatMode": false,
+  "nextQuestion": "Супер! Семейное путешествие — это всегда здорово! 👨‍👩‍👦 А на какие даты планируешь поездку? Когда хочешь отправиться и на сколько ночей?",
+  "searchParams": {
+    "from_city": "Moscow",
+    "from_country": "RU",
+    "to_country": "TR",
+    "to_city": "Antalya",
+    "adults": "2",
+    "kids": "1",
+    "kids_ages": ["5"]
+  }
+}
+
+Пользователь: "С 15 февраля на 7 ночей"
+Ответ: {
+  "chatMode": false,
+  "nextQuestion": null,
+  "searchParams": {
+    "from_city": "Moscow",
+    "from_country": "RU",
+    "to_country": "TR",
+    "to_city": "Antalya",
+    "adults": "2",
+    "kids": "1",
+    "kids_ages": ["5"],
+    "start_date": "2026-02-15",
+    "nights": "7",
+    "search_type": "package",
+    "flex_dates": 2,
+    "hotel_ids": [],
+    "page_number": 1,
+    "page_limit": 3,
+    "sort_by": "relevance"
+  }
+}
+
+ВАЖНО: 
+- Всегда возвращай ТОЛЬКО валидный JSON, без дополнительного текста, без markdown блоков кода
+- ВСЕГДА указывай поле "chatMode": true или false
+- В nextQuestion можешь использовать эмодзи для выражения эмоций (😊, 🎉, 🌴, ✈️, ✈️, 👨‍👩‍👦 и т.д.)
+- Будь искренне счастлив помогать каждому пользователю!
+- Помни: ты можешь и отвечать на вопросы, и помогать найти отели — все зависит от того, что хочет пользователь!
+- Если пользователь задает вопрос → chatMode: true, отвечай и помогай
+- Если пользователь хочет найти отели (говорит "да", "хочу найти", "искать") → chatMode: false, собирай данные
+`;
+
+
+
+
+
+
+// async function callDeepSeekAPIStream(userMessage, conversationHistory, onChunk) {
+//     const messages = [
+//         { role: 'system', content: DEEPSEEK_SYSTEM_PROMPT_MESSAGE },
+//         ...conversationHistory,
+//         { role: 'user', content: userMessage },
+//     ];
+//
+//     const response = await axios.post(
+//         DEEPSEEK_API_URL,
+//         {
+//             model: 'deepseek-chat',
+//             messages,
+//             temperature: 0,
+//             max_tokens: 400,
+//             stream: true,
+//         },
+//         {
+//             headers: {
+//                 'Content-Type': 'application/json',
+//                 'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+//             },
+//             responseType: 'stream',
+//         }
+//     );
+//
+//     return new Promise((resolve, reject) => {
+//         response.data.on('data', (chunk) => {
+//             const lines = chunk.toString().split('\n').filter(l => l.trim());
+//             for (const line of lines) {
+//                 if (line.startsWith('data:')) {
+//                     const data = line.replace('data:', '').trim();
+//                     if (data === '[DONE]') return resolve();
+//                     try {
+//                         const json = JSON.parse(data);
+//                         const content = json.choices?.[0]?.delta?.content;
+//                         if (content) onChunk(content);
+//                     } catch (e) {
+//                         // ignore partial JSON
+//                     }
+//                 }
+//             }
+//         });
+//
+//         response.data.on('error', reject);
+//         response.data.on('end', resolve);
+//     });
+// }
+
+// Helper to merge searchParams from conversation history
+function mergeSearchParamsFromHistory(conversationHistory) {
+    const merged = {
+        from_city: '',
+        from_country: 'RU',
+        to_country: '',
+        to_city: '',
+        adults: '1',
+        kids: '0',
+        kids_ages: [],
+        start_date: '',
+        nights: 1,
+        search_type: 'package',
+        flex_dates: 2,
+        hotel_ids: [],
+        page_number: 1,
+        page_limit: 3,
+        sort_by: 'relevance',
+    };
+
+    // Extract searchParams from previous messages
+    for (const msg of conversationHistory) {
+        if (msg.searchParams && typeof msg.searchParams === 'object') {
+            Object.assign(merged, msg.searchParams);
+        }
+    }
+
+    return merged;
+}
+
+async function callDeepSeek(userMessage, conversationHistory, currentSearchParams = {}) {
+    // Build messages array with proper role structure
+    const messages = [
+        { role: 'system', content: DEEPSEEK_SYSTEM_PROMPT_MESSAGE },
+    ];
+
+    // Add conversation history with proper role structure
+    for (const msg of conversationHistory) {
+        if (msg.role === 'user' || msg.role === 'assistant') {
+            messages.push({
+                role: msg.role,
+                content: msg.content || msg.text || '',
+            });
+        }
+    }
+
+    // Add current user message
+    messages.push({ role: 'user', content: userMessage });
+
+    try {
+        const response = await axios.post(
+            DEEPSEEK_API_URL,
+            {
+                model: 'deepseek-chat',
+                messages,
+                temperature: 0.7,
+                max_tokens: 600,
+            },
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+                },
+                timeout: 30000,
+            }
+        );
+
+        // DeepSeek can return plain text or JSON
+        const aiText = response.data?.choices?.[0]?.message?.content;
+        if (!aiText) {
+            return { 
+                chatMode: true,
+                nextQuestion: 'Извините, не удалось получить ответ. Попробуйте еще раз.', 
+                searchParams: {} 
+            };
+        }
+
+        // Try parsing JSON if AI returned object
+        let parsed = {};
+        try {
+            // Clean the response - remove markdown code blocks if present
+            let cleanText = aiText.trim();
+            if (cleanText.startsWith('```json')) {
+                cleanText = cleanText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+            } else if (cleanText.startsWith('```')) {
+                cleanText = cleanText.replace(/```\n?/g, '').trim();
+            }
+            parsed = JSON.parse(cleanText);
+        } catch (e) {
+            // If it's not JSON, treat as chat response
+            console.log('[DeepSeek] Response is not JSON, treating as chat:', aiText.substring(0, 100));
+            return { 
+                chatMode: true,
+                nextQuestion: aiText, 
+                searchParams: currentSearchParams 
+            };
+        }
+
+        // Extract chatMode (default to false if not specified, but check if it's a chat response)
+        const chatMode = parsed.chatMode !== undefined ? parsed.chatMode : false;
+
+        // Merge with current searchParams (only if not in chat mode)
+        const mergedParams = chatMode ? {} : { ...currentSearchParams };
+        
+        if (!chatMode && parsed.searchParams && typeof parsed.searchParams === 'object') {
+            Object.assign(mergedParams, parsed.searchParams);
+        } else if (!chatMode && (parsed.nextQuestion === null || parsed.nextQuestion === '' || !parsed.nextQuestion)) {
+            // If no nextQuestion and not chat mode, assume all params are in the root
+            Object.assign(mergedParams, parsed);
+        }
+
+        // Ensure required fields have defaults (only if not in chat mode)
+        if (!chatMode) {
+            if (!mergedParams.from_country) mergedParams.from_country = 'RU';
+            if (!mergedParams.adults) mergedParams.adults = '1';
+            if (!mergedParams.kids) mergedParams.kids = '0';
+            if (!mergedParams.kids_ages) mergedParams.kids_ages = [];
+            if (!mergedParams.search_type) mergedParams.search_type = 'package';
+            if (!mergedParams.flex_dates) mergedParams.flex_dates = 2;
+            if (!mergedParams.hotel_ids) mergedParams.hotel_ids = [];
+            if (!mergedParams.page_number) mergedParams.page_number = 1;
+            if (!mergedParams.page_limit) mergedParams.page_limit = 3;
+            if (!mergedParams.sort_by) mergedParams.sort_by = 'relevance';
+        }
+
+        return { 
+            chatMode: chatMode,
+            nextQuestion: parsed.nextQuestion || '', 
+            searchParams: chatMode ? {} : mergedParams 
+        };
+
+    } catch (error) {
+        console.error('Error calling DeepSeek:', error);
+        return { 
+            chatMode: true,
+            nextQuestion: 'Извините, произошла ошибка при обработке запроса. Попробуйте еще раз.', 
+            searchParams: {} 
+        };
+    }
+}
+
+
+// Streaming endpoint for step-by-step conversation
+app.post('/api/tour-assistant/stream', async (req, res) => {
+    try {
+        const { text, conversationHistory = [], currentSearchParams = {} } = req.body;
+
+        if (!text) {
+            return res.status(400).json({ error: 'text required' });
+        }
+
+        // Merge searchParams from conversation history
+        const mergedParams = mergeSearchParamsFromHistory(conversationHistory);
+        Object.assign(mergedParams, currentSearchParams);
+
+        // Call DeepSeek API safely
+        const aiResponse = await callDeepSeek(text, conversationHistory, mergedParams);
+
+        if (!aiResponse) {
+            return res.status(500).json({ error: 'AI response is empty' });
+        }
+
+        // Return AI response with chatMode and merged searchParams
+        res.json({
+            chatMode: aiResponse.chatMode !== undefined ? aiResponse.chatMode : false,
+            nextQuestion: aiResponse.nextQuestion,
+            searchParams: aiResponse.searchParams,
+        });
+
+    } catch (error) {
+        console.error('Error in /stream:', error);
+
+        // Axios errors have response.data.message sometimes
+        let message = 'Unknown server error';
+        if (error?.response?.data) message = JSON.stringify(error.response.data);
+        else if (error?.message) message = error.message;
+
+        res.status(500).json({ error: message });
+    }
+});
+
+// Note: Final search is now handled directly in the frontend using runFullSearchFlow
+// This endpoint is no longer needed
 
 // ======================
 // Server start
