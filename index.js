@@ -1825,13 +1825,29 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
             } else if (cleanText.startsWith('```')) {
                 cleanText = cleanText.replace(/```\n?/g, '').trim();
             }
+            // Try to extract JSON from mixed content (text + JSON)
+            if (!cleanText.startsWith('{')) {
+                const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    cleanText = jsonMatch[0];
+                }
+            }
             parsed = JSON.parse(cleanText);
         } catch (e) {
             // If it's not JSON, treat as chat response
+            // But first clean any JSON-like content from the text
             console.log('[DeepSeek] Response is not JSON, treating as chat:', aiText.substring(0, 100));
+            let cleanResponse = aiText.trim();
+            // Remove any JSON blocks that might be in the response
+            cleanResponse = cleanResponse.replace(/```json[\s\S]*?```/g, '').trim();
+            cleanResponse = cleanResponse.replace(/\{[\s\S]*"chatMode"[\s\S]*\}/g, '').trim();
+            cleanResponse = cleanResponse.replace(/\{[\s\S]*"searchParams"[\s\S]*\}/g, '').trim();
+            if (!cleanResponse) {
+                cleanResponse = 'Чем могу помочь?';
+            }
             return { 
                 chatMode: true,
-                nextQuestion: aiText, 
+                nextQuestion: cleanResponse, 
                 searchParams: currentSearchParams 
             };
         }
@@ -1839,14 +1855,33 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
         // Extract chatMode (default to false if not specified, but check if it's a chat response)
         const chatMode = parsed.chatMode !== undefined ? parsed.chatMode : false;
 
+        // Validate nextQuestion is not raw JSON
+        let nextQuestion = parsed.nextQuestion || '';
+        if (typeof nextQuestion === 'object') {
+            nextQuestion = '';
+        }
+        // If nextQuestion looks like JSON, clean it
+        if (nextQuestion && (nextQuestion.includes('"chatMode"') || nextQuestion.includes('"searchParams"'))) {
+            nextQuestion = nextQuestion.replace(/\{[\s\S]*"chatMode"[\s\S]*\}/g, '').trim();
+            nextQuestion = nextQuestion.replace(/\{[\s\S]*"searchParams"[\s\S]*\}/g, '').trim();
+            if (!nextQuestion) {
+                nextQuestion = chatMode ? 'Чем ещё могу помочь?' : '';
+            }
+        }
+
         // Merge with current searchParams (only if not in chat mode)
         const mergedParams = chatMode ? {} : { ...currentSearchParams };
         
         if (!chatMode && parsed.searchParams && typeof parsed.searchParams === 'object') {
             Object.assign(mergedParams, parsed.searchParams);
-        } else if (!chatMode && (parsed.nextQuestion === null || parsed.nextQuestion === '' || !parsed.nextQuestion)) {
-            // If no nextQuestion and not chat mode, assume all params are in the root
-            Object.assign(mergedParams, parsed);
+        } else if (!chatMode && (nextQuestion === null || nextQuestion === '' || !nextQuestion)) {
+            // If no nextQuestion and not chat mode, merge root-level search fields only
+            const searchFields = ['from_city', 'from_country', 'to_country', 'to_city', 'adults', 'kids', 'kids_ages', 'start_date', 'nights', 'search_type', 'flex_dates', 'hotel_ids', 'page_number', 'page_limit', 'sort_by'];
+            for (const field of searchFields) {
+                if (parsed[field] !== undefined) {
+                    mergedParams[field] = parsed[field];
+                }
+            }
         }
 
         // Ensure required fields have defaults (only if not in chat mode)
@@ -1865,7 +1900,7 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
 
         return { 
             chatMode: chatMode,
-            nextQuestion: parsed.nextQuestion || '', 
+            nextQuestion: nextQuestion, 
             searchParams: chatMode ? {} : mergedParams 
         };
 
@@ -1909,13 +1944,8 @@ app.post('/api/tour-assistant/stream', async (req, res) => {
 
     } catch (error) {
         console.error('Error in /stream:', error);
-
-        // Axios errors have response.data.message sometimes
-        let message = 'Unknown server error';
-        if (error?.response?.data) message = JSON.stringify(error.response.data);
-        else if (error?.message) message = error.message;
-
-        res.status(500).json({ error: message });
+        // Never send raw error details to the client
+        res.status(500).json({ error: 'Ой, что-то пошло не так. Попробуйте ещё раз!' });
     }
 });
 

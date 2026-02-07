@@ -35,7 +35,7 @@ async function synthesizeSpeech(text, options = {}) {
       languageCode = 'ru-RU',
       ssmlGender = 'FEMALE',
       audioEncoding = 'MP3',
-      voiceName = 'ru-RU-Wavenet-C'
+      voiceName = 'ru-RU-Chirp3-HD-Aoede'
     } = options;
 
     const request = {
