@@ -400,9 +400,14 @@ app.get('/api/contacts/:userId', async (req, res) => {
 
 // Search user by loyalty ID (for adding contacts)
 // GET /api/users/search/:loyaltyId
+// Supports loyalty IDs with or without spaces (e.g., "9897 3971 0801 6689" or "9897397108016689")
 app.get('/api/users/search/:loyaltyId', async (req, res) => {
   try {
-    const {loyaltyId} = req.params;
+    let {loyaltyId} = req.params;
+    // Remove all spaces from loyalty ID to normalize it
+    loyaltyId = loyaltyId.replace(/\s+/g, '');
+    console.log('[search-user] Searching for loyaltyId:', loyaltyId);
+    
     const user = await userDb.getUserDeviceInfoByLoyaltyId(loyaltyId);
     if (!user) {
       return res.status(404).json({error: 'User not found'});

@@ -51,11 +51,16 @@ const userDb = {
     },
 
     // Get user device info by loyalty_id
+    // Handles loyalty IDs with or without spaces (normalizes by removing spaces)
     async getUserDeviceInfoByLoyaltyId(loyaltyId) {
         try {
+            // Normalize loyalty ID by removing all spaces
+            const normalizedLoyaltyId = loyaltyId.replace(/\s+/g, '');
+            // Search using both the normalized version and with spaces removed from database value
+            // Use REPLACE to remove spaces from database value for comparison
             const [rows] = await pool.execute(
-                'SELECT * FROM users WHERE loyalty_id = ?',
-                [loyaltyId]
+                'SELECT * FROM users WHERE REPLACE(loyalty_id, " ", "") = ?',
+                [normalizedLoyaltyId]
             );
             return rows.length > 0 ? rows[0] : null;
         } catch (error) {
@@ -65,11 +70,15 @@ const userDb = {
     },
 
     // Get user by loyalty_id
+    // Handles loyalty IDs with or without spaces (normalizes by removing spaces)
     async getUserByLoyaltyId(loyaltyId) {
         try {
+            // Normalize loyalty ID by removing all spaces
+            const normalizedLoyaltyId = loyaltyId.replace(/\s+/g, '');
+            // Search using REPLACE to remove spaces from database value for comparison
             const [rows] = await pool.execute(
-                'SELECT * FROM users WHERE loyalty_id = ?',
-                [loyaltyId]
+                'SELECT * FROM users WHERE REPLACE(loyalty_id, " ", "") = ?',
+                [normalizedLoyaltyId]
             );
             return rows.length > 0 ? rows[0] : null;
         } catch (error) {
@@ -369,32 +378,38 @@ const candidateDb = {
 // Contacts operations
 const contactDb = {
     // Add a contact (user adds another user to their contacts)
+    // Handles loyalty IDs with or without spaces (normalizes by removing spaces)
     async addContact(userId, contactLoyaltyId) {
         try {
-            // Check if contact already exists
+            // Normalize loyalty ID by removing all spaces
+            const normalizedContactLoyaltyId = contactLoyaltyId.replace(/\s+/g, '');
+            
+            // Check if contact already exists (using COLLATE to handle collation mismatch)
+            // Compare normalized values
             const [existing] = await pool.execute(
-                'SELECT * FROM contacts WHERE user_id = ? AND contact_loyalty_id = ?',
-                [userId, contactLoyaltyId]
+                'SELECT * FROM contacts WHERE user_id = ? AND REPLACE(contact_loyalty_id, " ", "") COLLATE utf8mb4_general_ci = ? COLLATE utf8mb4_general_ci',
+                [userId, normalizedContactLoyaltyId]
             );
             
             if (existing.length > 0) {
                 return {ok: true, alreadyExists: true, id: existing[0].id};
             }
 
-            // Verify that the contact user exists
+            // Verify that the contact user exists (using COLLATE to handle collation mismatch)
+            // Search using normalized loyalty ID
             const [contactUser] = await pool.execute(
-                'SELECT id FROM users WHERE loyalty_id = ?',
-                [contactLoyaltyId]
+                'SELECT id FROM users WHERE REPLACE(loyalty_id, " ", "") COLLATE utf8mb4_general_ci = ? COLLATE utf8mb4_general_ci',
+                [normalizedContactLoyaltyId]
             );
 
             if (contactUser.length === 0) {
                 throw new Error('Contact user not found');
             }
 
-            // Add contact
+            // Add contact - store normalized loyalty ID (without spaces)
             const [result] = await pool.execute(
                 'INSERT INTO contacts (user_id, contact_loyalty_id, created_at) VALUES (?, ?, NOW())',
-                [userId, contactLoyaltyId]
+                [userId, normalizedContactLoyaltyId]
             );
             return {ok: true, id: result.insertId};
         } catch (error) {
@@ -422,7 +437,7 @@ const contactDb = {
                     u.voipToken,
                     u.socketId
                 FROM contacts c
-                INNER JOIN users u ON u.loyalty_id = c.contact_loyalty_id
+                INNER JOIN users u ON REPLACE(u.loyalty_id, " ", "") COLLATE utf8mb4_general_ci = REPLACE(c.contact_loyalty_id, " ", "") COLLATE utf8mb4_general_ci
                 WHERE c.user_id = ?
                 ORDER BY c.created_at DESC`,
                 [userId]
@@ -441,11 +456,14 @@ const contactDb = {
     },
 
     // Check if contact exists
+    // Handles loyalty IDs with or without spaces (normalizes by removing spaces)
     async contactExists(userId, contactLoyaltyId) {
         try {
+            // Normalize loyalty ID by removing all spaces
+            const normalizedContactLoyaltyId = contactLoyaltyId.replace(/\s+/g, '');
             const [rows] = await pool.execute(
-                'SELECT id FROM contacts WHERE user_id = ? AND contact_loyalty_id = ?',
-                [userId, contactLoyaltyId]
+                'SELECT id FROM contacts WHERE user_id = ? AND REPLACE(contact_loyalty_id, " ", "") COLLATE utf8mb4_general_ci = ? COLLATE utf8mb4_general_ci',
+                [userId, normalizedContactLoyaltyId]
             );
             return rows.length > 0;
         } catch (error) {
