@@ -9,7 +9,7 @@ const path = require('path');
 const textToSpeech = require('@google-cloud/text-to-speech');
 
 // Google Cloud JSON key path
-const keyFilename = path.join(__dirname, 'totus-voice-ac1464f87501.json');
+const keyFilename = path.join(__dirname, 'totusvoice-911c60095e2f.json');
 
 // Initialize Google Cloud TTS client
 const client = new textToSpeech.TextToSpeechClient({

@@ -398,6 +398,25 @@ app.get('/api/contacts/:userId', async (req, res) => {
   }
 });
 
+// Check if contact already exists
+// GET /api/contacts/check/:userId/:contactLoyaltyId
+app.get('/api/contacts/check/:userId/:contactLoyaltyId', async (req, res) => {
+  try {
+    const {userId, contactLoyaltyId} = req.params;
+    // Normalize loyalty ID by removing spaces
+    const normalizedContactLoyaltyId = contactLoyaltyId.replace(/\s+/g, '');
+    const exists = await contactDb.contactExists(parseInt(userId, 10), normalizedContactLoyaltyId);
+    
+    res.json({
+      ok: true,
+      exists: exists,
+    });
+  } catch (error) {
+    console.error('[check-contact] error:', error);
+    res.status(500).json({error: 'Failed to check contact: ' + error.message});
+  }
+});
+
 // Search user by loyalty ID (for adding contacts)
 // GET /api/users/search/:loyaltyId
 // Supports loyalty IDs with or without spaces (e.g., "9897 3971 0801 6689" or "9897397108016689")
