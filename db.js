@@ -473,7 +473,83 @@ const contactDb = {
     },
 };
 
-module.exports = {userDb, deviceDb, callDb, candidateDb, contactDb};
+// Favorites operations
+const favoriteDb = {
+    // Add a hotel to favorites
+    async addFavorite(userId, hotelId, hotelData) {
+        try {
+            // Check if favorite already exists
+            const [existing] = await pool.execute(
+                'SELECT * FROM favorites WHERE user_id = ? AND hotel_id = ?',
+                [userId, hotelId]
+            );
+            
+            if (existing.length > 0) {
+                return {ok: true, alreadyExists: true, id: existing[0].id};
+            }
+
+            // Add favorite - store hotel data as JSON
+            const hotelDataJson = JSON.stringify(hotelData);
+            const [result] = await pool.execute(
+                'INSERT INTO favorites (user_id, hotel_id, hotel_data, created_at) VALUES (?, ?, ?, NOW())',
+                [userId, hotelId, hotelDataJson]
+            );
+            return {ok: true, id: result.insertId};
+        } catch (error) {
+            console.error('Error adding favorite:', error);
+            throw error;
+        }
+    },
+
+    // Remove a hotel from favorites
+    async removeFavorite(userId, hotelId) {
+        try {
+            const [result] = await pool.execute(
+                'DELETE FROM favorites WHERE user_id = ? AND hotel_id = ?',
+                [userId, hotelId]
+            );
+            return {ok: true, deleted: result.affectedRows > 0};
+        } catch (error) {
+            console.error('Error removing favorite:', error);
+            throw error;
+        }
+    },
+
+    // Get all favorites for a user
+    async getUserFavorites(userId) {
+        try {
+            const [rows] = await pool.execute(
+                'SELECT id, hotel_id, hotel_data, created_at FROM favorites WHERE user_id = ? ORDER BY created_at DESC',
+                [userId]
+            );
+            return rows.map(row => ({
+                id: row.id,
+                hotelId: row.hotel_id,
+                hotelData: JSON.parse(row.hotel_data),
+                createdAt: row.created_at,
+            }));
+        } catch (error) {
+            console.error('Error getting user favorites:', error);
+            throw error;
+        }
+    },
+
+    // Check if hotel is favorited
+    async isFavorite(userId, hotelId) {
+        try {
+            const [rows] = await pool.execute(
+                'SELECT id FROM favorites WHERE user_id = ? AND hotel_id = ?',
+                [userId, hotelId]
+            );
+            return rows.length > 0;
+        } catch (error) {
+            console.error('Error checking favorite:', error);
+            throw error;
+        }
+    },
+};
+
+module.exports = {userDb, deviceDb, callDb, candidateDb, contactDb, favoriteDb};
 
 
 

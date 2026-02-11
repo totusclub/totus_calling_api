@@ -18,7 +18,7 @@ const {v4: uuidv4} = require('uuid');
 const apn = require('apn');
 const http = require('http');
 const {Server} = require('socket.io');
-const {userDb, contactDb} = require('./db');
+const {userDb, contactDb, favoriteDb} = require('./db');
 const {synthesizeSpeech, synthesizeSpeechToFile} = require('./ttsService');
 const axios = require('axios');
 
@@ -430,6 +430,114 @@ app.get('/api/users/search/:loyaltyId', async (req, res) => {
   } catch (error) {
     console.error('[search-user] error:', error);
     res.status(500).json({error: 'Failed to search user: ' + error.message});
+  }
+});
+
+// ======================
+// Favorites Management
+// ======================
+
+// Add a hotel to favorites
+// POST /api/favorites
+// body: { userId: number, hotelId: number, hotelData: object }
+app.post('/api/favorites', async (req, res) => {
+  const {userId, hotelId, hotelData} = req.body || {};
+  console.log('add-favorite', userId, hotelId);
+  
+  if (!userId || !hotelId || !hotelData) {
+    return res.status(400).json({error: 'userId, hotelId, and hotelData are required'});
+  }
+
+  try {
+    // Verify user exists
+    const user = await userDb.getUserById(userId);
+    if (!user) {
+      return res.status(404).json({error: 'User not found'});
+    }
+
+    // Add favorite
+    const result = await favoriteDb.addFavorite(userId, hotelId, hotelData);
+    
+    res.json({
+      ok: true,
+      favorite: {
+        id: result.id,
+        userId: userId,
+        hotelId: hotelId,
+        alreadyExists: result.alreadyExists || false,
+      },
+    });
+  } catch (error) {
+    console.error('[add-favorite] error:', error);
+    res.status(500).json({error: 'Failed to add favorite: ' + error.message});
+  }
+});
+
+// Remove a hotel from favorites
+// DELETE /api/favorites
+// body: { userId: number, hotelId: number }
+app.delete('/api/favorites', async (req, res) => {
+  const {userId, hotelId} = req.body || {};
+  console.log('remove-favorite', userId, hotelId);
+  
+  if (!userId || !hotelId) {
+    return res.status(400).json({error: 'userId and hotelId are required'});
+  }
+
+  try {
+    const result = await favoriteDb.removeFavorite(userId, hotelId);
+    
+    res.json({
+      ok: true,
+      deleted: result.deleted,
+    });
+  } catch (error) {
+    console.error('[remove-favorite] error:', error);
+    res.status(500).json({error: 'Failed to remove favorite: ' + error.message});
+  }
+});
+
+// Get user's favorites
+// GET /api/favorites/:userId
+app.get('/api/favorites/:userId', async (req, res) => {
+  try {
+    const {userId} = req.params;
+    console.log('[get-favorites] Fetching favorites for userId:', userId);
+    const favorites = await favoriteDb.getUserFavorites(parseInt(userId, 10));
+    console.log('[get-favorites] Found favorites:', favorites.length);
+    
+    res.json({
+      ok: true,
+      favorites: favorites,
+    });
+  } catch (error) {
+    console.error('[get-favorites] error:', error);
+    // If table doesn't exist, return empty array
+    if (error.message && (error.message.includes('doesn\'t exist') || error.message.includes('Unknown table'))) {
+      console.log('[get-favorites] Favorites table does not exist, returning empty array');
+      return res.json({
+        ok: true,
+        favorites: [],
+      });
+    }
+    res.status(500).json({error: 'Failed to get favorites: ' + error.message});
+  }
+});
+
+// Check if hotel is favorited
+// GET /api/favorites/:userId/:hotelId
+app.get('/api/favorites/:userId/:hotelId', async (req, res) => {
+  try {
+    const {userId, hotelId} = req.params;
+    const isFavorite = await favoriteDb.isFavorite(parseInt(userId, 10), parseInt(hotelId, 10));
+    
+    res.json({
+      ok: true,
+      isFavorite: isFavorite,
+    });
+  } catch (error) {
+    console.error('[check-favorite] error:', error);
+    res.status(500).json({error: 'Failed to check favorite: ' + error.message});
   }
 });
 
