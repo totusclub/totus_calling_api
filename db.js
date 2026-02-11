@@ -366,7 +366,90 @@ const candidateDb = {
     },
 };
 
-module.exports = {userDb, deviceDb, callDb, candidateDb};
+// Contacts operations
+const contactDb = {
+    // Add a contact (user adds another user to their contacts)
+    async addContact(userId, contactLoyaltyId) {
+        try {
+            // Check if contact already exists
+            const [existing] = await pool.execute(
+                'SELECT * FROM contacts WHERE user_id = ? AND contact_loyalty_id = ?',
+                [userId, contactLoyaltyId]
+            );
+            
+            if (existing.length > 0) {
+                return {ok: true, alreadyExists: true, id: existing[0].id};
+            }
+
+            // Verify that the contact user exists
+            const [contactUser] = await pool.execute(
+                'SELECT id FROM users WHERE loyalty_id = ?',
+                [contactLoyaltyId]
+            );
+
+            if (contactUser.length === 0) {
+                throw new Error('Contact user not found');
+            }
+
+            // Add contact
+            const [result] = await pool.execute(
+                'INSERT INTO contacts (user_id, contact_loyalty_id, created_at) VALUES (?, ?, NOW())',
+                [userId, contactLoyaltyId]
+            );
+            return {ok: true, id: result.insertId};
+        } catch (error) {
+            console.error('Error adding contact:', error);
+            throw error;
+        }
+    },
+
+    // Get all contacts for a user
+    async getUserContacts(userId) {
+        try {
+            const [rows] = await pool.execute(
+                `SELECT 
+                    c.id as contact_id,
+                    c.contact_loyalty_id,
+                    c.created_at,
+                    u.id,
+                    u.loyalty_id,
+                    u.name,
+                    u.f_name,
+                    u.l_name,
+                    u.email,
+                    u.phone,
+                    u.online,
+                    u.voipToken,
+                    u.socketId
+                FROM contacts c
+                INNER JOIN users u ON u.loyalty_id = c.contact_loyalty_id
+                WHERE c.user_id = ?
+                ORDER BY c.created_at DESC`,
+                [userId]
+            );
+            return rows;
+        } catch (error) {
+            console.error('Error getting user contacts:', error);
+            throw error;
+        }
+    },
+
+    // Check if contact exists
+    async contactExists(userId, contactLoyaltyId) {
+        try {
+            const [rows] = await pool.execute(
+                'SELECT id FROM contacts WHERE user_id = ? AND contact_loyalty_id = ?',
+                [userId, contactLoyaltyId]
+            );
+            return rows.length > 0;
+        } catch (error) {
+            console.error('Error checking contact existence:', error);
+            throw error;
+        }
+    },
+};
+
+module.exports = {userDb, deviceDb, callDb, candidateDb, contactDb};
 
 
 

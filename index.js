@@ -18,7 +18,7 @@ const {v4: uuidv4} = require('uuid');
 const apn = require('apn');
 const http = require('http');
 const {Server} = require('socket.io');
-const {userDb} = require('./db');
+const {userDb, contactDb} = require('./db');
 const {synthesizeSpeech, synthesizeSpeechToFile} = require('./ttsService');
 const axios = require('axios');
 
@@ -308,6 +308,117 @@ app.get('/api/users/by-id/:userId', async (req, res) => {
 });
 
 // ======================
+// Contacts Management
+// ======================
+
+// Add a contact (user adds another user to their contacts)
+// POST /api/contacts
+// body: { userId: number, contactLoyaltyId: string }
+app.post('/api/contacts', async (req, res) => {
+  const {userId, contactLoyaltyId} = req.body || {};
+  console.log('add-contact', userId, contactLoyaltyId);
+  
+  if (!userId || !contactLoyaltyId) {
+    return res.status(400).json({error: 'userId and contactLoyaltyId are required'});
+  }
+
+  try {
+    // Verify user exists
+    const user = await userDb.getUserById(userId);
+    if (!user) {
+      return res.status(404).json({error: 'User not found'});
+    }
+
+    // Verify contact user exists
+    const contactUser = await userDb.getUserByLoyaltyId(contactLoyaltyId);
+    if (!contactUser) {
+      return res.status(404).json({error: 'Contact user not found with loyalty_id: ' + contactLoyaltyId});
+    }
+
+    // Prevent adding self as contact
+    if (user.loyalty_id === contactLoyaltyId) {
+      return res.status(400).json({error: 'Cannot add yourself as a contact'});
+    }
+
+    // Add contact
+    const result = await contactDb.addContact(userId, contactLoyaltyId);
+    
+    res.json({
+      ok: true,
+      contact: {
+        id: result.id,
+        userId: userId,
+        contactLoyaltyId: contactLoyaltyId,
+        alreadyExists: result.alreadyExists || false,
+      },
+    });
+  } catch (error) {
+    console.error('[add-contact] error:', error);
+    res.status(500).json({error: 'Failed to add contact: ' + error.message});
+  }
+});
+
+// Get user's contacts
+// GET /api/contacts/:userId
+app.get('/api/contacts/:userId', async (req, res) => {
+  try {
+    const {userId} = req.params;
+    const contacts = await contactDb.getUserContacts(parseInt(userId, 10));
+    
+    res.json({
+      ok: true,
+      contacts: contacts.map((contact) => ({
+        id: contact.id,
+        contactId: contact.contact_id,
+        loyaltyId: contact.loyalty_id,
+        name: contact.name,
+        fName: contact.f_name,
+        lName: contact.l_name,
+        email: contact.email,
+        phone: contact.phone,
+        online: contact.online === 1,
+        hasVoipToken: !!contact.voipToken,
+        hasSocket: !!contact.socketId,
+        createdAt: contact.created_at,
+      })),
+    });
+  } catch (error) {
+    console.error('[get-contacts] error:', error);
+    res.status(500).json({error: 'Failed to get contacts: ' + error.message});
+  }
+});
+
+// Search user by loyalty ID (for adding contacts)
+// GET /api/users/search/:loyaltyId
+app.get('/api/users/search/:loyaltyId', async (req, res) => {
+  try {
+    const {loyaltyId} = req.params;
+    const user = await userDb.getUserDeviceInfoByLoyaltyId(loyaltyId);
+    if (!user) {
+      return res.status(404).json({error: 'User not found'});
+    }
+    res.json({
+      ok: true,
+      user: {
+        id: user.id,
+        loyaltyId: user.loyalty_id,
+        name: user.name,
+        fName: user.f_name,
+        lName: user.l_name,
+        email: user.email,
+        phone: user.phone,
+        online: user.online === 1,
+        hasVoipToken: !!user.voipToken,
+        hasSocket: !!user.socketId,
+      },
+    });
+  } catch (error) {
+    console.error('[search-user] error:', error);
+    res.status(500).json({error: 'Failed to search user: ' + error.message});
+  }
+});
+
+// ======================
 // Call Creation (Outgoing)
 // ======================
 
@@ -420,9 +531,10 @@ app.post('/api/calls', async (req, res) => {
   // The callerName from frontend might be the target's name (for outgoing calls),
   // so we should always fetch the actual caller's name from the database
   let finalCallerName = 'Incoming call';
+  let callerUser = null;
   if (callerLoyaltyId) {
     try {
-      const callerUser = await userDb.getUserByLoyaltyId(callerLoyaltyId);
+      callerUser = await userDb.getUserByLoyaltyId(callerLoyaltyId);
       if (callerUser) {
         // Format caller name from database
         if (callerUser.name) {
@@ -448,6 +560,27 @@ app.post('/api/calls', async (req, res) => {
   } else {
     // No callerLoyaltyId, use provided callerName
     finalCallerName = callerName || 'Incoming call';
+  }
+
+  // Auto-save contact: When caller calls someone, save the callee to caller's contacts
+  // When callee receives a call, save the caller to callee's contacts
+  if (callerLoyaltyId && targetLoyaltyId && callerUser && callerUser.id) {
+    try {
+      // Save callee to caller's contacts (outgoing call)
+      await contactDb.addContact(callerUser.id, targetLoyaltyId).catch(err => {
+        console.log('[call] auto-save contact (caller->callee) skipped:', err.message);
+      });
+      
+      // Save caller to callee's contacts (incoming call)
+      if (callee.userId) {
+        await contactDb.addContact(callee.userId, callerLoyaltyId).catch(err => {
+          console.log('[call] auto-save contact (callee->caller) skipped:', err.message);
+        });
+      }
+    } catch (error) {
+      // Don't fail the call if contact saving fails
+      console.error('[call] error auto-saving contacts:', error);
+    }
   }
 
   calls.set(callId, {
