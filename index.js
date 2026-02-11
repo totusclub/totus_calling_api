@@ -363,7 +363,9 @@ app.post('/api/contacts', async (req, res) => {
 app.get('/api/contacts/:userId', async (req, res) => {
   try {
     const {userId} = req.params;
+    console.log('[get-contacts] Fetching contacts for userId:', userId);
     const contacts = await contactDb.getUserContacts(parseInt(userId, 10));
+    console.log('[get-contacts] Found contacts:', contacts.length);
     
     res.json({
       ok: true,
@@ -384,6 +386,14 @@ app.get('/api/contacts/:userId', async (req, res) => {
     });
   } catch (error) {
     console.error('[get-contacts] error:', error);
+    // If table doesn't exist or other DB error, return empty array instead of error
+    if (error.message && (error.message.includes('doesn\'t exist') || error.message.includes('Unknown table'))) {
+      console.log('[get-contacts] Contacts table does not exist, returning empty array');
+      return res.json({
+        ok: true,
+        contacts: [],
+      });
+    }
     res.status(500).json({error: 'Failed to get contacts: ' + error.message});
   }
 });

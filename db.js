@@ -427,9 +427,15 @@ const contactDb = {
                 ORDER BY c.created_at DESC`,
                 [userId]
             );
+            console.log(`[contactDb] Found ${rows.length} contacts for userId ${userId}`);
             return rows;
         } catch (error) {
             console.error('Error getting user contacts:', error);
+            // If table doesn't exist, return empty array
+            if (error.message && (error.message.includes('doesn\'t exist') || error.message.includes('Unknown table'))) {
+                console.log('[contactDb] Contacts table does not exist');
+                return [];
+            }
             throw error;
         }
     },
