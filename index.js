@@ -1758,7 +1758,13 @@ app.post('/api/tour-assistant', async (req, res) => {
 // `;
 
 const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
-Ты счастливый и дружелюбный туристический помощник! Твоя миссия — помочь каждому пользователю найти идеальное путешествие его мечты! 
+Ты профессиональный туристический ассистент. Помогай пользователям найти идеальное путешествие, собирая ВСЕ необходимые данные перед запуском поиска.
+
+🎯 КРИТИЧЕСКИ ВАЖНО:
+- НИКОГДА не запускай поиск, пока НЕ собраны ВСЕ обязательные поля
+- Задавай вопросы последовательно, по одному за раз
+- Если пользователь не ответил - задай вопрос снова, НЕ переходи к следующему
+- Поиск ТОЛЬКО когда заполнены: from_city/from_country, to_country, adults, start_date, nights, filter_price_max, kids, kids_ages (если kids > 0)
 
 ТВОЙ ХАРАКТЕР:
 - Ты очень позитивный, энергичный и радуешься каждому новому запросу
@@ -1798,12 +1804,18 @@ const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
 - Если пользователь уже в режиме поиска и отвечает на вопросы → продолжай собирать searchParams
 - Если пользователь задает вопрос во время сбора данных → можешь ответить, но потом вернись к сбору данных
 
-3. РЕЖИМ "ПОКАЗАТЬ ЕЩЁ" (showMore):
-   - Если пользователь говорит: "ещё", "другие", "покажи ещё", "не нравятся", "другие отели", "следующие", "дальше", "показать больше", "не подходят", "другие варианты" и т.п.
+3. РЕЖИМ "ПОКАЗАТЬ ЕЩЁ" (ПАГИНАЦИЯ) - КРИТИЧЕСКИ ВАЖНО:
+   - Если пользователь говорит: "ещё", "еще", "ещо", "другие", "других", "покажи ещё", "покажи еще", "не нравятся", "другие отели", "следующие", "дальше", "показать больше", "не подходят", "другие варианты", "ищу ещё варианты", "ищу еще варианты", "ищи", "поищи", "найди ещё", "найди еще" и т.п.
    - Это означает, что пользователь хочет увидеть СЛЕДУЮЩУЮ страницу отелей
-   - В этом случае: chatMode: false, nextQuestion: null или "", searchParams: те же параметры но page_number увеличен на 1
-   - Если текущий page_number = 1, верни page_number = 2, если 2 → верни 3 и т.д.
-   - ВАЖНО: Сохрани ВСЕ остальные searchParams как есть, НЕ обнуляй их!
+   - ВАЖНО: Если есть активный поиск (все обязательные поля заполнены) И пользователь просит "ещё" → это ПАГИНАЦИЯ
+   - Для пагинации: chatMode: false, nextQuestion: "Ищу ещё варианты для тебя! 🔎", searchParams: ВСЕ те же параметры + page_number увеличен на 1
+   - ОБЯЗАТЕЛЬНО: Верни ПОЛНЫЙ объект searchParams со ВСЕМИ параметрами из предыдущего поиска:
+     * to_country, start_date, nights, adults, kids, kids_ages, filter_price_max, filter_price_min
+     * from_city, from_country, to_city (если был)
+     * ВСЕ фильтры (filter_stars, filter_meals, filter_instant_confirm и т.д.)
+     * page_number увеличен на 1 (если текущий = 1 → верни 2, если 2 → верни 3)
+     * search_type, flex_dates, hotel_ids, page_limit, sort_by
+   - НЕ меняй никакие другие параметры при пагинации, только page_number!
 
 4. РЕЖИМ "ИЗМЕНЕНИЕ ПАРАМЕТРОВ" (changeParams):
    - Если пользователь хочет ИЗМЕНИТЬ один или несколько параметров поиска:
@@ -1814,8 +1826,7 @@ const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
      - Город вылета: "из Петербурга", "вылет из Казани"
    - ОБЯЗАТЕЛЬНО обнови ТОЛЬКО изменённые поля, остальные сохрани как есть
    - ОБЯЗАТЕЛЬНО сбрось page_number на 1 (это НОВЫЙ поиск с новыми параметрами!)
-   - Верни: chatMode: false, nextQuestion: null или "", searchParams: обновленные параметры с page_number: 1
-   - Примеры фраз пользователя: "а если в Египет?", "поменяй страну на Грецию", "а на другие даты?", "давай на март", "а если на 10 ночей?"
+   - Верни: chatMode: false, nextQuestion: короткое сообщение о поиске, searchParams: обновленные параметры с page_number: 1
 
 ТЫ ДОЛЖЕН:
 - Распознавать информацию из свободных ответов пользователя
@@ -1823,18 +1834,28 @@ const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
 - Задавать только ОДИН вопрос за раз
 - Когда все обязательные поля заполнены — вернуть searchParams с nextQuestion: null или ""
 
-ОБЯЗАТЕЛЬНЫЕ ПОЛЯ для поиска:
-- from_city (город вылета) или from_country (страна вылета, по умолчанию "RU")
-- to_country (страна назначения) - ОБЯЗАТЕЛЬНО
-- adults (количество взрослых, по умолчанию "1")
-- start_date (дата вылета в формате YYYY-MM-DD)
-- nights (количество ночей, число или строка "X" или "X-Y")
+ОБЯЗАТЕЛЬНЫЕ ПОЛЯ для поиска (ВСЕ должны быть заполнены перед запуском поиска):
+1. from_city (город вылета) или from_country (страна вылета) - ОБЯЗАТЕЛЬНО
+2. to_country (страна назначения) - ОБЯЗАТЕЛЬНО
+3. adults (количество взрослых) - ОБЯЗАТЕЛЬНО, по умолчанию "1" если не указано
+4. start_date (дата вылета в формате YYYY-MM-DD) - ОБЯЗАТЕЛЬНО
+5. nights (количество ночей, число или строка "X") - ОБЯЗАТЕЛЬНО
+6. filter_price_max (максимальный бюджет в рублях) - ОБЯЗАТЕЛЬНО, всегда спрашивай у пользователя
+7. kids (количество детей) - ОБЯЗАТЕЛЬНО, всегда спрашивай "Есть ли дети?" если не указано
+8. kids_ages (массив возрастов детей) - ОБЯЗАТЕЛЬНО если kids > "0", пустой массив [] если kids = "0"
 
-ОПЦИОНАЛЬНЫЕ ПОЛЯ:
+ВАЖНО ПРО ОБЯЗАТЕЛЬНЫЕ ПОЛЯ:
+- НИКОГДА не запускай поиск, пока НЕ собраны ВСЕ обязательные поля
+- Задавай вопросы последовательно, по одному за раз
+- Если пользователь не ответил на вопрос - задай его снова, НЕ переходи к следующему
+- Если kids > "0", ОБЯЗАТЕЛЬНО спроси про kids_ages (возраст детей)
+- filter_price_max - это ОБЯЗАТЕЛЬНОЕ поле, всегда спрашивай "Какой у тебя бюджет?" или "До какой суммы ищешь отели?"
+
+ОПЦИОНАЛЬНЫЕ ПОЛЯ (не обязательны для поиска):
 - to_city (город назначения)
-- kids (количество детей, по умолчанию "0")
-- kids_ages (массив возрастов детей, пустой если kids = "0")
 - flex_dates (гибкость по датам в днях, по умолчанию 2)
+- filter_price_min (минимальная цена, по умолчанию 0 если не указано)
+- filter_stars, filter_meals, filter_instant_confirm и другие фильтры (все опциональны)
 
 ТЕХНИЧЕСКИЕ ПОЛЯ (всегда одинаковые):
 - search_type: "package"
@@ -1843,29 +1864,54 @@ const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
 - page_limit: 3
 - sort_by: "relevance"
 
-ПРАВИЛА:
-1. Если поле не заполнено — задай ОДИН дружелюбный и позитивный вопрос на русском языке
-2. Распознавай данные из свободной формы: "2 взрослых и ребенок 5 лет", "с 23 января на 7 ночей", "в Турцию, Анталию"
-3. НЕ изменяй уже заполненные поля, ЕСЛИ пользователь НЕ просит их изменить. Но ЕСЛИ пользователь явно хочет изменить параметр (страну, дату, ночи и т.д.) — ОБЯЗАТЕЛЬНО обнови это поле и сбрось page_number на 1!
-4. Если kids = "0" → kids_ages = []
-5. nights может быть числом или строкой "7" или "7-9"
-6. Когда ВСЕ обязательные поля заполнены → верни searchParams. В nextQuestion напиши короткое позитивное сообщение о том что ищешь (например "Ищу отели в Турции для тебя! 🔍", "Подбираю варианты в Египте! 🌴", "Ищу ещё варианты! 🔎"). Если nextQuestion пустой, можно вернуть null.
-7. Будь индивидуальным — ссылайся на то, что пользователь уже упомянул: "Как я понял, ты хочешь в Турцию...", "Отлично, мы выяснили, что вылет из Москвы..."
-8. Показывай энтузиазм и радость от помощи!
+ПРАВИЛА СБОРА ДАННЫХ:
+1. Задавай вопросы ПОСЛЕДОВАТЕЛЬНО, по одному обязательному полю за раз
+2. НЕ переходи к следующему вопросу, пока не получил ответ на текущий
+3. Если пользователь не ответил на вопрос или ответ неясен - задай вопрос снова, НЕ запускай поиск
+4. Распознавай данные из свободной формы: "2 взрослых и ребенок 5 лет", "с 23 января на 7 ночей", "в Турцию, Анталию", "до 50000 рублей"
+5. НЕ изменяй уже заполненные поля, ЕСЛИ пользователь НЕ просит их изменить. Но ЕСЛИ пользователь явно хочет изменить параметр (страну, дату, ночи и т.д.) — ОБЯЗАТЕЛЬНО обнови это поле и сбрось page_number на 1!
+6. Если kids = "0" → kids_ages = [] (обязательно)
+7. Если kids > "0" → ОБЯЗАТЕЛЬНО спроси про kids_ages (возраст детей)
+8. nights может быть числом или строкой "7" или "7-9"
+9. filter_price_min по умолчанию 0, если пользователь не указал минимальную цену
+10. Когда ВСЕ обязательные поля заполнены → верни searchParams с nextQuestion содержащим короткое позитивное сообщение о том что ищешь (например "Ищу отели в Турции для тебя! 🔍", "Подбираю варианты в Египте! 🌴", "Ищу ещё варианты! 🔎")
+11. Будь индивидуальным — ссылайся на то, что пользователь уже упомянул: "Как я понял, ты хочешь в Турцию...", "Отлично, мы выяснили, что вылет из Москвы..."
+12. Показывай энтузиазм и радость от помощи!
 
-ФОРМАТ ОТВЕТА (ТОЛЬКО JSON, БЕЗ МАРКДАУНА):
+ПОРЯДОК СБОРА ОБЯЗАТЕЛЬНЫХ ПОЛЕЙ (рекомендуемый, но можешь адаптировать):
+1. Сначала спроси про направление (to_country) или город вылета (from_city)
+2. Затем спроси про дату (start_date)
+3. Затем спроси про количество ночей (nights)
+4. Затем спроси про количество взрослых (adults)
+5. Затем спроси про детей (kids) - "Есть ли дети?"
+6. Если есть дети (kids > "0") - спроси про возраст детей (kids_ages)
+7. В конце ОБЯЗАТЕЛЬНО спроси про бюджет (filter_price_max) - "Какой у тебя бюджет?" или "До какой суммы ищешь отели?"
+
+ВАЖНО: Если какое-то обязательное поле отсутствует - НЕ запускай поиск! Задай вопрос про это поле.
+
+КРИТИЧЕСКИ ВАЖНО ДЛЯ КАЧЕСТВА РАБОТЫ:
+1. ВСЕГДА возвращай ВАЛИДНЫЙ JSON - проверь синтаксис перед отправкой
+2. ВСЕГДА включай ВСЕ поля в searchParams (даже пустые строки для незаполненных полей)
+3. При пагинации ВСЕГДА возвращай ПОЛНЫЙ объект searchParams со ВСЕМИ параметрами
+4. НЕ возвращай частичные объекты или неполные данные
+5. Если не уверен в формате - используй примеры ниже
+
+ФОРМАТ ОТВЕТА (ТОЛЬКО JSON, БЕЗ МАРКДАУНА, БЕЗ КОДОВЫХ БЛОКОВ):
 {
   "chatMode": true или false,
   "nextQuestion": "текст вопроса/ответа или null",
   "searchParams": {
-    "from_city": "Moscow",
-    "from_country": "RU",
-    "to_country": "TR",
+    "from_city": "",
+    "from_country": "",
+    "to_country": "",
+    "to_city": "",
     "adults": "2",
     "kids": "1",
-    "kids_ages": ["5"],
+    "kids_ages": [],
     "start_date": "2026-02-15",
     "nights": "7",
+    "filter_price_max": 50000,
+    "filter_price_min": 0,
     "search_type": "package",
     "flex_dates": 2,
     "hotel_ids": [],
@@ -1875,104 +1921,16 @@ const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
   }
 }
 
-ПРИМЕРЫ (обрати внимание на позитивный и индивидуальный тон):
-
-Пользователь: "Привет"
-Ответ: {
-  "chatMode": true,
-  "nextQuestion": "Привет! Как здорово, что ты решил отправиться в путешествие! 😊 Чем могу помочь? Могу рассказать о направлениях, помочь выбрать отель или найти подходящий тур. Что тебя интересует?",
-  "searchParams": {}
-}
-
-Пользователь: "Какие отели есть в Турции?"
-Ответ: {
-  "chatMode": true,
-  "nextQuestion": "В Турции просто огромный выбор отелей! 🌴 Есть и роскошные 5-звездочные отели с собственными пляжами, и уютные семейные отели. Особенно популярны отели в Анталии, Кемере, Алании. Хочешь, помогу найти конкретные варианты? Просто скажи 'да' или 'хочу найти', и я помогу подобрать идеальный отель! 😊",
-  "searchParams": {}
-}
-
-Пользователь: "Да, хочу найти"
-Ответ: {
-  "chatMode": false,
-  "nextQuestion": "Отлично! Давай найдем идеальный отель для тебя! 🎉 Из какого города планируешь вылет?",
-  "searchParams": {
-    "from_country": "RU"
-  }
-}
-
-Пользователь: "Привет, хочу найти отель"
-Ответ: {
-  "chatMode": false,
-  "nextQuestion": "Привет! Как здорово, что ты решил найти отель! 😊 Давай начнем! Из какого города планируешь вылет?",
-  "searchParams": {
-    "from_country": "RU"
-  }
-}
-
-Пользователь: "Из Москвы"
-Ответ: {
-  "chatMode": false,
-  "nextQuestion": "Отлично, Москва! Отличный старт! 🎉 А куда мечтаешь поехать? В какую страну?",
-  "searchParams": {
-    "from_city": "Moscow",
-    "from_country": "RU"
-  }
-}
-
-Пользователь: "В Турцию, Анталию"
-Ответ: {
-  "chatMode": false,
-  "nextQuestion": "О, Турция и Анталия — это просто потрясающе! 🌴 Там такой красивый пляж и море! А на сколько человек планируешь поездку?",
-  "searchParams": {
-    "from_city": "Moscow",
-    "from_country": "RU",
-    "to_country": "TR",
-    "to_city": "Antalya"
-  }
-}
-
-Пользователь: "2 взрослых и ребенок 5 лет"
-Ответ: {
-  "chatMode": false,
-  "nextQuestion": "Супер! Семейное путешествие — это всегда здорово! 👨‍👩‍👦 А на какие даты планируешь поездку? Когда хочешь отправиться и на сколько ночей?",
-  "searchParams": {
-    "from_city": "Moscow",
-    "from_country": "RU",
-    "to_country": "TR",
-    "to_city": "Antalya",
-    "adults": "2",
-    "kids": "1",
-    "kids_ages": ["5"]
-  }
-}
-
-Пользователь: "С 15 февраля на 7 ночей"
-Ответ: {
-  "chatMode": false,
-  "nextQuestion": "Отлично! Ищу лучшие отели в Турции, Анталии для тебя! 🔍✈️",
-  "searchParams": {
-    "from_city": "Moscow",
-    "from_country": "RU",
-    "to_country": "TR",
-    "to_city": "Antalya",
-    "adults": "2",
-    "kids": "1",
-    "kids_ages": ["5"],
-    "start_date": "2026-02-15",
-    "nights": "7",
-    "search_type": "package",
-    "flex_dates": 2,
-    "hotel_ids": [],
-    "page_number": 1,
-    "page_limit": 3,
-    "sort_by": "relevance"
-  }
-}
-
-ПОКАЗАТЬ ЕЩЁ ПРИМЕРЫ:
-
-Пользователь: "Ещё" / "Другие" / "Покажи ещё" / "Не нравятся" / "Другие варианты"
-(Если searchParams уже заполнены и page_number = 1)
+ПРИМЕРЫ:
+Пользователь: "Привет" → chatMode: true, nextQuestion: дружелюбный ответ
+Пользователь: "Да, хочу найти" → chatMode: false, nextQuestion: "Из какого города вылет?", searchParams: {from_country: "RU"}
+Пользователь: "Из Москвы" → chatMode: false, nextQuestion: "В какую страну?", searchParams: {from_city: "Moscow", from_country: "RU"}
+Пользователь: "В Турцию" → chatMode: false, nextQuestion: "На какую дату?", searchParams: {..., to_country: "TR"}
+Пользователь: "С 15 февраля на 7 ночей, 2 взрослых, ребенок 5 лет" → chatMode: false, nextQuestion: "Какой бюджет?", searchParams: {..., start_date: "2026-02-15", nights: "7", adults: "2", kids: "1", kids_ages: ["5"]}
+Пользователь: "До 50000" → chatMode: false, nextQuestion: "Ищу отели! 🔍", searchParams: {..., filter_price_max: 50000, все поля заполнены}
+Пользователь: "Ещё" → chatMode: false, nextQuestion: "Ищу ещё варианты! 🔎", searchParams: {ВСЕ те же параметры из предыдущего поиска, page_number: 2}
+ПРИМЕР ПАГИНАЦИИ (если предыдущий поиск был с page_number: 1):
+Пользователь: "Ещё"
 Ответ: {
   "chatMode": false,
   "nextQuestion": "Ищу ещё варианты для тебя! 🔎",
@@ -1982,10 +1940,12 @@ const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
     "to_country": "TR",
     "to_city": "Antalya",
     "adults": "2",
-    "kids": "0",
-    "kids_ages": [],
+    "kids": "1",
+    "kids_ages": ["5"],
     "start_date": "2026-02-15",
     "nights": "7",
+    "filter_price_max": 50000,
+    "filter_price_min": 0,
     "search_type": "package",
     "flex_dates": 2,
     "hotel_ids": [],
@@ -1994,122 +1954,7 @@ const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
     "sort_by": "relevance"
   }
 }
-
-ИЗМЕНЕНИЕ ПАРАМЕТРОВ ПРИМЕРЫ:
-
-Пользователь: "А давай лучше в Египет" / "Поменяй на Египет" / "А если в Египет?"
-(Если до этого искали в Турции — пользователь хочет ИЗМЕНИТЬ страну)
-Ответ: {
-  "chatMode": false,
-  "nextQuestion": "Отлично! Переключаюсь на Египет, ищу варианты! 🇪🇬🌴",
-  "searchParams": {
-    "from_city": "Moscow",
-    "from_country": "RU",
-    "to_country": "EG",
-    "adults": "2",
-    "kids": "0",
-    "kids_ages": [],
-    "start_date": "2026-02-15",
-    "nights": "7",
-    "search_type": "package",
-    "flex_dates": 2,
-    "hotel_ids": [],
-    "page_number": 1,
-    "page_limit": 3,
-    "sort_by": "relevance"
-  }
-}
-ОБРАТИ ВНИМАНИЕ: to_country изменён на "EG", to_city убран (т.к. Antalya не в Египте), page_number СБРОШЕН на 1!
-
-Пользователь: "А на март?" / "Поменяй дату на 15 марта" / "Давай в марте"
-(Если до этого искали на февраль — пользователь хочет ИЗМЕНИТЬ дату)
-Ответ: {
-  "chatMode": false,
-  "nextQuestion": "Понял! Ищу на март, подожди немного! 📅🔍",
-  "searchParams": {
-    "from_city": "Moscow",
-    "from_country": "RU",
-    "to_country": "TR",
-    "to_city": "Antalya",
-    "adults": "2",
-    "kids": "0",
-    "kids_ages": [],
-    "start_date": "2026-03-15",
-    "nights": "7",
-    "search_type": "package",
-    "flex_dates": 2,
-    "hotel_ids": [],
-    "page_number": 1,
-    "page_limit": 3,
-    "sort_by": "relevance"
-  }
-}
-ОБРАТИ ВНИМАНИЕ: start_date изменён на "2026-03-15", page_number СБРОШЕН на 1!
-
-Пользователь: "А на 10 ночей?" / "Давай подольше, на 14 ночей"
-(Если до этого было 7 ночей — пользователь хочет ИЗМЕНИТЬ количество ночей)
-Ответ: {
-  "chatMode": false,
-  "nextQuestion": "Хорошо, ищу на 10 ночей! 🔍",
-  "searchParams": {
-    "from_city": "Moscow",
-    "from_country": "RU",
-    "to_country": "TR",
-    "to_city": "Antalya",
-    "adults": "2",
-    "kids": "0",
-    "kids_ages": [],
-    "start_date": "2026-02-15",
-    "nights": "10",
-    "search_type": "package",
-    "flex_dates": 2,
-    "hotel_ids": [],
-    "page_number": 1,
-    "page_limit": 3,
-    "sort_by": "relevance"
-  }
-}
-ОБРАТИ ВНИМАНИЕ: nights изменён на "10", page_number СБРОШЕН на 1!
-
-Пользователь: "А в Египет на март на 10 дней?"
-(Пользователь хочет ИЗМЕНИТЬ НЕСКОЛЬКО параметров одновременно)
-Ответ: {
-  "chatMode": false,
-  "nextQuestion": "Отлично! Ищу отели в Египте на март, 10 ночей! 🇪🇬🌴",
-  "searchParams": {
-    "from_city": "Moscow",
-    "from_country": "RU",
-    "to_country": "EG",
-    "adults": "2",
-    "kids": "0",
-    "kids_ages": [],
-    "start_date": "2026-03-01",
-    "nights": "10",
-    "search_type": "package",
-    "flex_dates": 2,
-    "hotel_ids": [],
-    "page_number": 1,
-    "page_limit": 3,
-    "sort_by": "relevance"
-  }
-}
-ОБРАТИ ВНИМАНИЕ: to_country, to_city, start_date, nights изменены, page_number СБРОШЕН на 1!
-
-ВАЖНО: 
-- Всегда возвращай ТОЛЬКО валидный JSON, без дополнительного текста, без markdown блоков кода
-- ВСЕГДА указывай поле "chatMode": true или false
-- В nextQuestion можешь использовать эмодзи для выражения эмоций (😊, 🎉, 🌴, ✈️, ✈️, 👨‍👩‍👦 и т.д.)
-- Будь искренне счастлив помогать каждому пользователю!
-- Помни: ты можешь и отвечать на вопросы, и помогать найти отели — все зависит от того, что хочет пользователь!
-- Если пользователь задает вопрос → chatMode: true, отвечай и помогай
-- Если пользователь хочет найти отели (говорит "да", "хочу найти", "искать") → chatMode: false, собирай данные
-- Если пользователь хочет увидеть ДРУГИЕ отели (говорит "ещё", "другие", "не нравятся", "следующие", "дальше") → chatMode: false, nextQuestion: короткое сообщение ("Ищу ещё варианты! 🔎"), page_number + 1
-- Если пользователь хочет ИЗМЕНИТЬ параметры (страну, дату, ночи, кол-во людей и т.д.) → chatMode: false, nextQuestion: короткое сообщение о поиске с новыми параметрами, обнови ИЗМЕНЁННЫЕ поля, page_number = 1 (НОВЫЙ поиск!)
-- ВСЕГДА включай nextQuestion с коротким дружелюбным сообщением, даже когда все поля заполнены. Это сообщение будет показано пользователю во время поиска!
-
-КЛЮЧЕВОЕ РАЗЛИЧИЕ "ещё" vs "изменение":
-- "Покажи ещё" / "Другие варианты" → page_number + 1, параметры НЕ меняются (та же страна, дата, ночи)
-- "А в Египет?" / "Поменяй на март" / "На 10 ночей" → page_number = 1, ОБНОВИ изменённый параметр (НОВЫЙ поиск!)
+Пользователь: "А в Египет?" → chatMode: false, nextQuestion: "Ищу в Египте! 🇪🇬", searchParams: {..., to_country: "EG", page_number: 1}
 `;
 
 
@@ -2196,6 +2041,16 @@ function mergeSearchParamsFromHistory(conversationHistory) {
 }
 
 async function callDeepSeek(userMessage, conversationHistory, currentSearchParams = {}) {
+    // [PAGINATION_DEBUG] Entry
+    console.log('[PAGINATION_DEBUG] -------- callDeepSeek ENTRY --------');
+    console.log('[PAGINATION_DEBUG] currentSearchParams.page_number:', currentSearchParams.page_number);
+    console.log('[PAGINATION_DEBUG] userMessage:', (userMessage || '').substring(0, 60));
+
+    // AI will determine pagination based on context and user message
+    // We only check if there's an active search to provide context to AI
+    const hasActiveSearch = currentSearchParams && currentSearchParams.to_country && currentSearchParams.start_date;
+    console.log('[PAGINATION_DEBUG] hasActiveSearch:', hasActiveSearch, 'to_country:', currentSearchParams.to_country, 'start_date:', currentSearchParams.start_date);
+    
     // Build messages array with proper role structure
     const messages = [
         { role: 'system', content: DEEPSEEK_SYSTEM_PROMPT_MESSAGE },
@@ -2212,11 +2067,35 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
     }
 
     // Include current search params context so the AI knows the current page_number
-    // This is critical for pagination: without it, the AI can't increment page_number properly
+    // This is critical for pagination: AI needs to know current state to make correct decisions
     if (currentSearchParams && currentSearchParams.page_number && currentSearchParams.to_country) {
+        const currentPageNumber = currentSearchParams.page_number || 1;
+        const nextPageNumber = currentPageNumber + 1;
+        
         messages.push({
             role: 'system',
-            content: `КОНТЕКСТ ТЕКУЩЕГО ПОИСКА: Текущие параметры поиска пользователя: ${JSON.stringify(currentSearchParams)}. Текущий page_number = ${currentSearchParams.page_number}. Если пользователь хочет увидеть ДРУГИЕ отели, увеличь page_number на 1 (следующий page_number = ${currentSearchParams.page_number + 1}). Все остальные searchParams оставь без изменений!`,
+            content: `🔍 КОНТЕКСТ АКТИВНОГО ПОИСКА:
+Текущие параметры поиска: ${JSON.stringify(currentSearchParams)}
+Текущий page_number = ${currentPageNumber}
+Следующий page_number должен быть = ${nextPageNumber}
+
+ТВОЯ ЗАДАЧА - ОПРЕДЕЛИТЬ ПАГИНАЦИЮ:
+1. Если пользователь просит "ещё", "другие", "покажи ещё", "следующие", "дальше", "ищи", "ещо", "еще" и т.п.
+   И при этом НЕ меняет основные параметры (страну, дату, ночи, людей, бюджет) → это ПАГИНАЦИЯ
+   
+2. При пагинации:
+   - Верни ПОЛНЫЙ объект searchParams со ВСЕМИ теми же параметрами из текущего поиска
+   - Установи page_number = ${nextPageNumber} (ОБЯЗАТЕЛЬНО ${nextPageNumber}, не ${currentPageNumber}!)
+   - Включи ВСЕ параметры: to_country, start_date, nights, adults, kids, kids_ages, filter_price_max, filter_price_min, from_city, from_country, to_city, все фильтры
+   - nextQuestion: "Ищу ещё варианты для тебя! 🔎"
+   - НЕ меняй никакие другие параметры при пагинации, только page_number!
+
+3. Если пользователь ИЗМЕНЯЕТ параметры (страну, дату, ночи, людей, бюджет) → это НОВЫЙ поиск с page_number = 1
+
+КРИТИЧЕСКИ ВАЖНО: 
+- Если это пагинация - верни page_number = ${nextPageNumber} (текущий ${currentPageNumber} + 1)
+- Если новый поиск - верни page_number = 1
+- При пагинации ВСЕГДА возвращай ПОЛНЫЙ объект searchParams со ВСЕМИ параметрами из текущего поиска`,
         });
     }
 
@@ -2305,11 +2184,152 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
             }
         }
 
+        // --- BACKEND-SIDE PAGINATION SAFETY ---
+        // User wants "more" results → if есть активный поиск, но AI не увеличил page_number,
+        // форсим корректный page_number здесь, чтобы логика пагинации работала на 100%.
+        if (!chatMode && hasActiveSearch) {
+            const normalizedUserText = (userMessage || '').toLowerCase();
+            const userWantsMore =
+                normalizedUserText.includes('ещё') ||
+                normalizedUserText.includes('еще') ||
+                normalizedUserText.includes('ещо') ||
+                normalizedUserText.includes('другие') ||
+                normalizedUserText.includes('следующие') ||
+                normalizedUserText.includes('дальше') ||
+                normalizedUserText.includes('покажи ещё') ||
+                normalizedUserText.includes('покажи еще') ||
+                normalizedUserText.includes('найди ещё') ||
+                normalizedUserText.includes('найди еще') ||
+                normalizedUserText.includes('ищи') ||
+                normalizedUserText.includes('поищи') ||
+                normalizedUserText.includes('найти друга варианты') ||
+                normalizedUserText.includes('найти другие варианты');
+
+            if (userWantsMore) {
+                const currentPageNumber = currentSearchParams.page_number || 1;
+                console.log('[PAGINATION_DEBUG] userWantsMore=true, currentPageNumber:', currentPageNumber);
+                if (!parsed.searchParams || typeof parsed.searchParams !== 'object') {
+                    parsed.searchParams = {};
+                }
+                
+                // КРИТИЧЕСКИ ВАЖНО: При пагинации копируем ВСЕ параметры из currentSearchParams в parsed.searchParams
+                // Это гарантирует, что AI получит полный контекст и вернет правильный JSON
+                Object.keys(currentSearchParams).forEach(key => {
+                    if (key !== 'page_number' && parsed.searchParams[key] === undefined) {
+                        parsed.searchParams[key] = currentSearchParams[key];
+                    }
+                });
+                
+                // Если AI не задал page_number или вернул <= текущей страницы – поднимаем страницу на +1
+                const aiPageNumber = parsed.searchParams.page_number || 1;
+                // CRITICAL: Always increment page_number for pagination requests
+                // Use the maximum of (currentPageNumber + 1) and aiPageNumber to ensure we always advance
+                const forcedPageNumber = Math.max(currentPageNumber + 1, aiPageNumber);
+                parsed.searchParams.page_number = forcedPageNumber;
+                
+                console.log('[PAGINATION_DEBUG] BACKEND FORCED PAGINATION: currentPageNumber:', currentPageNumber, '→ forcedPageNumber:', forcedPageNumber, 'AI had returned:', aiPageNumber);
+                
+                if (aiPageNumber <= currentPageNumber) {
+                    console.log('[Backend] ✅ FORCED pagination - user wants more, currentPage:', currentPageNumber, '→ forced page_number:', forcedPageNumber, 'AI returned:', aiPageNumber);
+                } else if (aiPageNumber === forcedPageNumber) {
+                    console.log('[Backend] ✅ Pagination confirmed - currentPage:', currentPageNumber, '→ page_number:', forcedPageNumber, 'AI returned:', aiPageNumber);
+                } else {
+                    console.log('[Backend] ✅ Pagination adjusted - currentPage:', currentPageNumber, '→ page_number:', forcedPageNumber, 'AI returned:', aiPageNumber);
+                }
+                console.log('[Backend] Copied all params from currentSearchParams to parsed.searchParams for pagination');
+            } else {
+                console.log('[PAGINATION_DEBUG] userWantsMore=false (no pagination keywords in message)');
+            }
+        } else {
+            console.log('[PAGINATION_DEBUG] Skipped pagination safety: chatMode=', chatMode, 'hasActiveSearch=', hasActiveSearch);
+        }
+
         // Merge with current searchParams (only if not in chat mode)
+        // For pagination: preserve ALL existing params and only update page_number
+        // For new search: merge AI's params with current params
         const mergedParams = chatMode ? {} : { ...currentSearchParams };
         
         if (!chatMode && parsed.searchParams && typeof parsed.searchParams === 'object') {
-            Object.assign(mergedParams, parsed.searchParams);
+            // AI-BASED PAGINATION: Trust AI's decision completely
+            // If AI returns page_number > 1 AND core params match → it's pagination
+            const aiPageNumber = parsed.searchParams.page_number || 1;
+            const currentPageNumber = currentSearchParams.page_number || 1;
+            
+            // Check if core params match (for pagination detection)
+            // If parsed.searchParams doesn't have these fields, they should match (we copied them above)
+            const paramsMatch = currentSearchParams.to_country && 
+                               (parsed.searchParams.to_country === currentSearchParams.to_country || !parsed.searchParams.to_country || parsed.searchParams.to_country === '') &&
+                               (parsed.searchParams.start_date === currentSearchParams.start_date || !parsed.searchParams.start_date || parsed.searchParams.start_date === '');
+            
+            // CRITICAL: Check if user wants pagination (keywords were detected above)
+            // This is the PRIMARY way to detect pagination - more reliable than AI's page_number
+            const userWantsMore = (userMessage || '').toLowerCase().includes('другие') ||
+                                 (userMessage || '').toLowerCase().includes('ещё') ||
+                                 (userMessage || '').toLowerCase().includes('еще') ||
+                                 (userMessage || '').toLowerCase().includes('ещо') ||
+                                 (userMessage || '').toLowerCase().includes('ищи') ||
+                                 (userMessage || '').toLowerCase().includes('поищи') ||
+                                 (userMessage || '').toLowerCase().includes('найди') ||
+                                 (userMessage || '').toLowerCase().includes('предлагай') ||
+                                 (userMessage || '').toLowerCase().includes('следующие') ||
+                                 (userMessage || '').toLowerCase().includes('дальше');
+            
+            // Pagination if:
+            // 1. We have active search AND
+            // 2. Core params match (or user wants more) AND
+            // 3. (AI says page_number > 1 OR backend forced increment OR user wants more)
+            const isPagination = hasActiveSearch && 
+                                paramsMatch && 
+                                (aiPageNumber > 1 || aiPageNumber > currentPageNumber || userWantsMore);
+            
+            console.log('[Backend] Pagination check:', {
+                hasActiveSearch,
+                aiPageNumber,
+                currentPageNumber,
+                paramsMatch,
+                isPagination,
+                userWantsMore,
+                to_country_current: currentSearchParams.to_country,
+                to_country_parsed: parsed.searchParams.to_country,
+                start_date_current: currentSearchParams.start_date,
+                start_date_parsed: parsed.searchParams.start_date,
+                to_country_match: parsed.searchParams.to_country === currentSearchParams.to_country || !parsed.searchParams.to_country || parsed.searchParams.to_country === '',
+                start_date_match: parsed.searchParams.start_date === currentSearchParams.start_date || !parsed.searchParams.start_date || parsed.searchParams.start_date === '',
+            });
+            console.log('[PAGINATION_DEBUG] isPagination=', isPagination, '→ mergedParams.page_number will be:', isPagination ? parsed.searchParams.page_number : '(from merge)');
+            
+            if (isPagination) {
+                // For pagination: preserve ALL current params, use AI's page_number
+                console.log('[Backend] ✅ PAGINATION CONFIRMED - page_number:', aiPageNumber, 'preserving all params');
+                
+                // CRITICAL: Start with ALL currentSearchParams, then override only page_number and page_limit
+                // IMPORTANT: mergedParams already has currentSearchParams from line 2237, but we need to ensure ALL fields are preserved
+                Object.assign(mergedParams, currentSearchParams);
+                // CRITICAL: Use the forced page_number from parsed.searchParams (which was already incremented above)
+                mergedParams.page_number = parsed.searchParams.page_number; // This is the forced/incremented value
+                mergedParams.page_limit = 3; // ALWAYS force page_limit to 3 for pagination
+                
+                console.log('[Backend] Merged params for pagination:', {
+                    page_number: mergedParams.page_number,
+                    to_country: mergedParams.to_country,
+                    start_date: mergedParams.start_date,
+                    nights: mergedParams.nights,
+                    adults: mergedParams.adults,
+                    filter_price_max: mergedParams.filter_price_max,
+                });
+                
+                // Merge any new filter params that AI might have returned (but don't override existing ones)
+                const filterFields = ['filter_price_min', 'filter_price_max', 'filter_stars', 'filter_meals', 
+                    'filter_instant_confirm', 'filter_regions', 'filter_line', 'filter_operators', 'filter_hotel_type'];
+                for (const field of filterFields) {
+                    if (parsed.searchParams[field] !== undefined && parsed.searchParams[field] !== null && parsed.searchParams[field] !== '') {
+                        mergedParams[field] = parsed.searchParams[field];
+                    }
+                }
+            } else {
+                // For new search or field updates: merge AI's params
+                Object.assign(mergedParams, parsed.searchParams);
+            }
         } else if (!chatMode && (nextQuestion === null || nextQuestion === '' || !nextQuestion)) {
             // If no nextQuestion and not chat mode, merge root-level search fields only
             const searchFields = ['from_city', 'from_country', 'to_country', 'to_city', 'adults', 'kids', 'kids_ages', 'start_date', 'nights', 'search_type', 'flex_dates', 'hotel_ids', 'page_number', 'page_limit', 'sort_by'];
@@ -2321,18 +2341,86 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
         }
 
         // Ensure required fields have defaults (only if not in chat mode)
+        // For pagination: preserve existing values, don't override
         if (!chatMode) {
-            if (!mergedParams.from_country) mergedParams.from_country = 'RU';
-            if (!mergedParams.adults) mergedParams.adults = '1';
-            if (!mergedParams.kids) mergedParams.kids = '0';
-            if (!mergedParams.kids_ages) mergedParams.kids_ages = [];
+            const isPagination = mergedParams.page_number > 1 && currentSearchParams.to_country;
+            
+            if (!mergedParams.from_country) mergedParams.from_country = currentSearchParams.from_country || 'RU';
+            if (!mergedParams.adults) mergedParams.adults = isPagination ? (currentSearchParams.adults || '1') : '1';
+            if (!mergedParams.kids) mergedParams.kids = isPagination ? (currentSearchParams.kids || '0') : '0';
+            if (!mergedParams.kids_ages) mergedParams.kids_ages = isPagination ? (currentSearchParams.kids_ages || []) : [];
             if (!mergedParams.search_type) mergedParams.search_type = 'package';
-            if (!mergedParams.flex_dates) mergedParams.flex_dates = 2;
+            if (!mergedParams.flex_dates) mergedParams.flex_dates = isPagination ? (currentSearchParams.flex_dates || 2) : 2;
             if (!mergedParams.hotel_ids) mergedParams.hotel_ids = [];
             if (!mergedParams.page_number) mergedParams.page_number = 1;
-            if (!mergedParams.page_limit) mergedParams.page_limit = 3;
+            // ALWAYS force page_limit to 3 - CRITICAL for consistent pagination
+            mergedParams.page_limit = 3;
             if (!mergedParams.sort_by) mergedParams.sort_by = 'relevance';
+            
+            // For pagination: preserve all filter params from current search
+            if (isPagination) {
+                console.log('[Backend] Preserving all params for pagination...');
+                const filterFields = ['filter_price_min', 'filter_price_max', 'filter_stars', 'filter_meals', 
+                    'filter_instant_confirm', 'filter_regions', 'filter_line', 'filter_operators', 'filter_hotel_type'];
+                for (const field of filterFields) {
+                    if (currentSearchParams[field] !== undefined && mergedParams[field] === undefined) {
+                        mergedParams[field] = currentSearchParams[field];
+                    }
+                }
+                // Preserve core search params - CRITICAL for pagination
+                if (!mergedParams.to_country && currentSearchParams.to_country) {
+                    mergedParams.to_country = currentSearchParams.to_country;
+                    console.log('[Backend] Preserved to_country:', currentSearchParams.to_country);
+                }
+                if (!mergedParams.start_date && currentSearchParams.start_date) {
+                    mergedParams.start_date = currentSearchParams.start_date;
+                    console.log('[Backend] Preserved start_date:', currentSearchParams.start_date);
+                }
+                if (!mergedParams.nights && currentSearchParams.nights) {
+                    mergedParams.nights = currentSearchParams.nights;
+                    console.log('[Backend] Preserved nights:', currentSearchParams.nights);
+                }
+                if (!mergedParams.adults && currentSearchParams.adults) {
+                    mergedParams.adults = currentSearchParams.adults;
+                    console.log('[Backend] Preserved adults:', currentSearchParams.adults);
+                }
+                if (!mergedParams.kids && currentSearchParams.kids !== undefined) {
+                    mergedParams.kids = currentSearchParams.kids;
+                    console.log('[Backend] Preserved kids:', currentSearchParams.kids);
+                }
+                if (!mergedParams.kids_ages && currentSearchParams.kids_ages) {
+                    mergedParams.kids_ages = currentSearchParams.kids_ages;
+                    console.log('[Backend] Preserved kids_ages:', currentSearchParams.kids_ages);
+                }
+                if (!mergedParams.filter_price_max && currentSearchParams.filter_price_max) {
+                    mergedParams.filter_price_max = currentSearchParams.filter_price_max;
+                    console.log('[Backend] Preserved filter_price_max:', currentSearchParams.filter_price_max);
+                }
+                if (!mergedParams.from_city && currentSearchParams.from_city) {
+                    mergedParams.from_city = currentSearchParams.from_city;
+                    console.log('[Backend] Preserved from_city:', currentSearchParams.from_city);
+                }
+                if (!mergedParams.from_country && currentSearchParams.from_country) {
+                    mergedParams.from_country = currentSearchParams.from_country;
+                    console.log('[Backend] Preserved from_country:', currentSearchParams.from_country);
+                }
+            }
         }
+
+        // Final logging before return
+        const finalPageNumber = mergedParams.page_number || 1;
+        console.log('[Backend] ✅ Final response:', {
+            chatMode,
+            nextQuestion: nextQuestion ? nextQuestion.substring(0, 50) : '',
+            page_number: finalPageNumber,
+            to_country: mergedParams.to_country,
+            start_date: mergedParams.start_date,
+            nights: mergedParams.nights,
+            adults: mergedParams.adults,
+            filter_price_max: mergedParams.filter_price_max,
+            hasActiveSearch,
+            paramsCount: Object.keys(mergedParams).length,
+        });
 
         return { 
             chatMode: chatMode,
@@ -2360,9 +2448,24 @@ app.post('/api/tour-assistant/stream', async (req, res) => {
             return res.status(400).json({ error: 'text required' });
         }
 
+        // [PAGINATION_DEBUG] Incoming request
+        console.log('[PAGINATION_DEBUG] ========== STREAM REQUEST ==========');
+        console.log('[PAGINATION_DEBUG] user text:', text.substring(0, 80));
+        console.log('[PAGINATION_DEBUG] currentSearchParams.page_number:', currentSearchParams.page_number);
+        console.log('[PAGINATION_DEBUG] currentSearchParams keys:', Object.keys(currentSearchParams).join(', '));
+        console.log('[PAGINATION_DEBUG] currentSearchParams (full):', JSON.stringify({
+            page_number: currentSearchParams.page_number,
+            to_country: currentSearchParams.to_country,
+            start_date: currentSearchParams.start_date,
+            adults: currentSearchParams.adults,
+            nights: currentSearchParams.nights,
+        }));
+
         // Merge searchParams from conversation history
         const mergedParams = mergeSearchParamsFromHistory(conversationHistory);
         Object.assign(mergedParams, currentSearchParams);
+
+        console.log('[PAGINATION_DEBUG] mergedParams BEFORE callDeepSeek.page_number:', mergedParams.page_number);
 
         // Call DeepSeek API safely
         const aiResponse = await callDeepSeek(text, conversationHistory, mergedParams);
@@ -2370,6 +2473,11 @@ app.post('/api/tour-assistant/stream', async (req, res) => {
         if (!aiResponse) {
             return res.status(500).json({ error: 'AI response is empty' });
         }
+
+        console.log('[PAGINATION_DEBUG] ========== STREAM RESPONSE ==========');
+        console.log('[PAGINATION_DEBUG] chatMode:', aiResponse.chatMode);
+        console.log('[PAGINATION_DEBUG] searchParams.page_number returned:', aiResponse.searchParams && aiResponse.searchParams.page_number);
+        console.log('[PAGINATION_DEBUG] searchParams keys returned:', aiResponse.searchParams ? Object.keys(aiResponse.searchParams).join(', ') : 'none');
 
         // Return AI response with chatMode and merged searchParams
         res.json({
