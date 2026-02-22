@@ -1828,6 +1828,18 @@ const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
    - ОБЯЗАТЕЛЬНО сбрось page_number на 1 (это НОВЫЙ поиск с новыми параметрами!)
    - Верни: chatMode: false, nextQuestion: короткое сообщение о поиске, searchParams: обновленные параметры с page_number: 1
 
+5. РЕЖИМ "ИЗМЕНЕНИЕ ФИЛЬТРОВ" - КРИТИЧЕСКИ ВАЖНО:
+   - Если ВСЕ обязательные поля УЖЕ заполнены И пользователь хочет изменить/добавить ФИЛЬТРЫ:
+     - Звёзды: "только 5 звезд", "4-5 звезды", "5 зачли", "типер толко 4"
+     - Питание: "всё включено", "ультра всё включено", "полупансион"
+     - Линия пляжа: "первая линия", "у моря", "на пляже"
+     - Пляж: "песок", "галька"
+   - ВАЖНО: НЕ просто подтверждай изменение фильтра! СРАЗУ запускай поиск!
+   - ОБЯЗАТЕЛЬНО верни ПОЛНЫЙ searchParams со ВСЕМИ параметрами + обновленными фильтрами + page_number: 1
+   - Верни: chatMode: false, nextQuestion: "Ищу X-звёздочные отели с Y для тебя! 🔍", searchParams: {все параметры + обновленные фильтры}
+   - ПРИМЕР: Пользователь: "только 5 звезд" → СРАЗУ верни searchParams с filter_stars: "5" и message "Ищу 5-звёздочные отели..."
+   - НЕ жди команды "найти" - если фильтр изменён и все поля заполнены → СРАЗУ ищи!
+
 ТЫ ДОЛЖЕН:
 - Распознавать информацию из свободных ответов пользователя
 - Заполнять searchParams постепенно, сохраняя уже введенные данные
@@ -1855,7 +1867,66 @@ const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
 - to_city (город назначения)
 - flex_dates (гибкость по датам в днях, по умолчанию 2)
 - filter_price_min (минимальная цена, по умолчанию 0 если не указано)
-- filter_stars, filter_meals, filter_instant_confirm и другие фильтры (все опциональны)
+- filter_stars, filter_meals, filter_beach_surface, filter_line и другие фильтры (все опциональны)
+
+🎯 АВТОМАТИЧЕСКОЕ ИЗВЛЕЧЕНИЕ ОПЦИОНАЛЬНЫХ ФИЛЬТРОВ:
+ВАЖНО: НЕ задавай вопросы про опциональные фильтры! Просто извлекай их из сообщений пользователя, если он их упоминает.
+Если пользователь говорит "любой", "не важно", "без разницы" про какой-то фильтр - игнорируй его.
+
+ФИЛЬТРЫ ПИТАНИЯ (filter_meals):
+Допустимые значения: BB, RO, AI, UAI, HB, FB, HBD, AI24, DNR, AIL, FB+, HB+, HBL
+Соответствия:
+- BB → завтрак, breakfast
+- RO → без питания, только номер, no meals
+- DNR → только ужин, dinner
+- HB → полупансион, завтрак и ужин, half board
+- HBD → завтрак и ужин (если явно HBD)
+- HBL → завтрак и обед
+- FB → полный пансион, трёхразовое, full board
+- FB+ → полный пансион плюс
+- HB+ → полупансион плюс
+- AI → всё включено, all inclusive
+- AI24 → всё включено 24 часа
+- UAI → ультра всё включено, ultra all inclusive
+- AIL → всё включено с ограничениями
+Примеры: "всё включено" → filter_meals: "AI", "ультра" → filter_meals: "UAI", "завтрак" → filter_meals: "BB"
+Если несколько значений: filter_meals: "AI,UAI" (через запятую, без пробелов)
+
+ФИЛЬТР ПЛЯЖА (filter_beach_surface):
+Допустимые значения: SAND, SAND+PEBBLE, PEBBLE, PLATFORM
+Соответствия:
+- SAND → песок, песчаный
+- SAND+PEBBLE → песок с галькой, смешанный
+- PEBBLE → галька, галечный
+- PLATFORM → платформа, понтон
+Примеры: "песчаный пляж" → filter_beach_surface: "SAND", "галька" → filter_beach_surface: "PEBBLE"
+Если несколько: filter_beach_surface: "SAND,PEBBLE"
+
+ФИЛЬТР ЛИНИИ МОРЯ (filter_line):
+Допустимые значения: 1, 2, 3
+Соответствия:
+- 1 → первая линия, у моря, на пляже, beachfront
+- 2 → вторая линия
+- 3 → третья линия
+Примеры: "первая линия" → filter_line: "1", "1-2 линия" → filter_line: "1,2"
+
+ФИЛЬТР ЗВЁЗД (filter_stars):
+Допустимые значения: 1, 2, 3, 4, 5
+ПО УМОЛЧАНИЮ: 5 звёзд (если пользователь не указал другое)
+Соответствия:
+- "5 звезд", "5*", "пятизвёздочный" → filter_stars: "5"
+- "4-5 звезд" → filter_stars: "4,5"
+- "от 3 звёзд", "3 и выше" → filter_stars: "3,4,5"
+- "4 звезды", "четыре звезды" → filter_stars: "4"
+- "3 звезды" → filter_stars: "3"
+
+ПРАВИЛА ИЗВЛЕЧЕНИЯ ФИЛЬТРОВ:
+1. НИКОГДА не спрашивай про опциональные фильтры - только извлекай из сообщений
+2. Если пользователь упомянул фильтр - добавь его в searchParams
+3. Если несколько значений - используй запятую: "AI,UAI", "4,5", "SAND,PEBBLE"
+4. Понимай естественную речь: "хочу 5 звёзд с всё включено на первой линии с песчаным пляжем"
+5. Поддерживай русский, английский, смешанный язык, опечатки
+6. При пагинации СОХРАНЯЙ все фильтры из предыдущего поиска
 
 ТЕХНИЧЕСКИЕ ПОЛЯ (всегда одинаковые):
 - search_type: "package"
@@ -1895,6 +1966,10 @@ const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
 3. При пагинации ВСЕГДА возвращай ПОЛНЫЙ объект searchParams со ВСЕМИ параметрами
 4. НЕ возвращай частичные объекты или неполные данные
 5. Если не уверен в формате - используй примеры ниже
+6. ВАЖНО: Когда пользователь меняет ФИЛЬТРЫ (звёзды, питание, линия, пляж) и ВСЕ обязательные поля УЖЕ заполнены:
+   - СРАЗУ возвращай searchParams с обновленным фильтром и page_number: 1
+   - НЕ жди команды "найти" или "искать" - поиск должен запуститься АВТОМАТИЧЕСКИ
+   - Пример: "только 5 звезд" → СРАЗУ вернуть searchParams с filter_stars: "5"
 
 ФОРМАТ ОТВЕТА (ТОЛЬКО JSON, БЕЗ МАРКДАУНА, БЕЗ КОДОВЫХ БЛОКОВ):
 {
@@ -1928,7 +2003,16 @@ const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
 Пользователь: "В Турцию" → chatMode: false, nextQuestion: "На какую дату?", searchParams: {..., to_country: "TR"}
 Пользователь: "С 15 февраля на 7 ночей, 2 взрослых, ребенок 5 лет" → chatMode: false, nextQuestion: "Какой бюджет?", searchParams: {..., start_date: "2026-02-15", nights: "7", adults: "2", kids: "1", kids_ages: ["5"]}
 Пользователь: "До 50000" → chatMode: false, nextQuestion: "Ищу отели! 🔍", searchParams: {..., filter_price_max: 50000, все поля заполнены}
+Пользователь: "5 звезд всё включено первая линия песок" → chatMode: false, nextQuestion: "Ищу 5* отели с всё включено на первой линии с песчаным пляжем! 🏖️", searchParams: {..., filter_stars: "5", filter_meals: "AI", filter_line: "1", filter_beach_surface: "SAND"}
 Пользователь: "Ещё" → chatMode: false, nextQuestion: "Ищу ещё варианты! 🔎", searchParams: {ВСЕ те же параметры из предыдущего поиска, page_number: 2}
+Пользователь: "только 5 звезд" (после поиска) → chatMode: false, nextQuestion: "Ищу 5-звёздочные отели для тебя! ⭐⭐⭐⭐⭐", searchParams: {ВСЕ параметры + filter_stars: "5", page_number: 1}
+Пользователь: "ультра всё включено" (после поиска) → chatMode: false, nextQuestion: "Ищу отели с ультра всё включено! 🍹", searchParams: {ВСЕ параметры + filter_meals: "UAI", page_number: 1}
+Пользователь: "только завтрак" или "толко завтрик" (после поиска) → chatMode: false, nextQuestion: "Ищу отели с завтраком! ☕", searchParams: {ВСЕ параметры + filter_meals: "BB", page_number: 1}
+Пользователь: "не хочу ультра" (после поиска с UAI) → chatMode: false, nextQuestion: "Ищу отели с завтраком! ☕", searchParams: {ВСЕ параметры + filter_meals: "BB", page_number: 1}
+Пользователь: "и первая линия" (после поиска с фильтрами) → chatMode: false, nextQuestion: "Ищу отели на первой линии! 🏖️", searchParams: {ВСЕ параметры + ВСЕ предыдущие фильтры + filter_line: "1", page_number: 1}
+Пользователь: "вторая линия" (после поиска) → chatMode: false, nextQuestion: "Ищу отели на второй линии! 🏨", searchParams: {ВСЕ параметры + filter_line: "2", page_number: 1}
+Пользователь: "песчаный пляж" или "песок" (после поиска) → chatMode: false, nextQuestion: "Ищу отели с песчаным пляжем! 🏖️", searchParams: {ВСЕ параметры + filter_beach_surface: "SAND", page_number: 1}
+Пользователь: "галька" или "галечный пляж" (после поиска) → chatMode: false, nextQuestion: "Ищу отели с галечным пляжем! 🏖️", searchParams: {ВСЕ параметры + filter_beach_surface: "PEBBLE", page_number: 1}
 ПРИМЕР ПАГИНАЦИИ (если предыдущий поиск был с page_number: 1):
 Пользователь: "Ещё"
 Ответ: {
@@ -2320,7 +2404,7 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
                 
                 // Merge any new filter params that AI might have returned (but don't override existing ones)
                 const filterFields = ['filter_price_min', 'filter_price_max', 'filter_stars', 'filter_meals', 
-                    'filter_instant_confirm', 'filter_regions', 'filter_line', 'filter_operators', 'filter_hotel_type'];
+                    'filter_instant_confirm', 'filter_regions', 'filter_line', 'filter_operators', 'filter_hotel_type', 'filter_beach_surface'];
                 for (const field of filterFields) {
                     if (parsed.searchParams[field] !== undefined && parsed.searchParams[field] !== null && parsed.searchParams[field] !== '') {
                         mergedParams[field] = parsed.searchParams[field];
@@ -2361,7 +2445,7 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
             if (isPagination) {
                 console.log('[Backend] Preserving all params for pagination...');
                 const filterFields = ['filter_price_min', 'filter_price_max', 'filter_stars', 'filter_meals', 
-                    'filter_instant_confirm', 'filter_regions', 'filter_line', 'filter_operators', 'filter_hotel_type'];
+                    'filter_instant_confirm', 'filter_regions', 'filter_line', 'filter_operators', 'filter_hotel_type', 'filter_beach_surface'];
                 for (const field of filterFields) {
                     if (currentSearchParams[field] !== undefined && mergedParams[field] === undefined) {
                         mergedParams[field] = currentSearchParams[field];
@@ -2444,6 +2528,20 @@ app.post('/api/tour-assistant/stream', async (req, res) => {
     try {
         const { text, conversationHistory = [], currentSearchParams = {} } = req.body;
 
+        // Log full request payload
+        console.log('\n========== 📥 TOUR-ASSISTANT REQUEST ==========');
+        console.log('📝 User message:', text);
+        console.log('📊 Current search params:', JSON.stringify(currentSearchParams, null, 2));
+        console.log('💬 Conversation history length:', conversationHistory.length);
+        if (conversationHistory.length > 0) {
+            console.log('💬 Last 3 messages:');
+            conversationHistory.slice(-3).forEach((msg, i) => {
+                const content = msg.content?.substring(0, 100) + (msg.content?.length > 100 ? '...' : '');
+                console.log(`   [${msg.role}]: ${content}`);
+            });
+        }
+        console.log('================================================\n');
+
         if (!text) {
             return res.status(400).json({ error: 'text required' });
         }
@@ -2459,6 +2557,11 @@ app.post('/api/tour-assistant/stream', async (req, res) => {
             start_date: currentSearchParams.start_date,
             adults: currentSearchParams.adults,
             nights: currentSearchParams.nights,
+            filter_stars: currentSearchParams.filter_stars,
+            filter_meals: currentSearchParams.filter_meals,
+            filter_line: currentSearchParams.filter_line,
+            filter_beach_surface: currentSearchParams.filter_beach_surface,
+            filter_price_max: currentSearchParams.filter_price_max,
         }));
 
         // Merge searchParams from conversation history
@@ -2479,11 +2582,443 @@ app.post('/api/tour-assistant/stream', async (req, res) => {
         console.log('[PAGINATION_DEBUG] searchParams.page_number returned:', aiResponse.searchParams && aiResponse.searchParams.page_number);
         console.log('[PAGINATION_DEBUG] searchParams keys returned:', aiResponse.searchParams ? Object.keys(aiResponse.searchParams).join(', ') : 'none');
 
+        // AUTO-SEARCH FIX: If AI says "Ищу" but didn't return searchParams, use mergedParams
+        const searchKeywords = ['ищу', 'подбираю', 'поиск', 'ищем', 'ищю', 'найд'];
+        const nextQuestionLower = (aiResponse.nextQuestion || '').toLowerCase();
+        const aiSaysSearching = searchKeywords.some(kw => nextQuestionLower.includes(kw));
+        
+        // Check if user message contains filter keywords (stars, meals, beach, line)
+        const textLower = text.toLowerCase();
+        
+        // CHECK IF USER IS SATISFIED/DONE - should NOT trigger search
+        const userIsSatisfied = textLower.match(/спасибо|благодар|отлично|супер|класс|нашёл|нашел|нашла|выбрал|выбрала|понрав|нравится|хорош|подход|устраива|беру|бронир|заказ|оформ|thank|thanks|perfect|great|found|like|good/);
+        const userSaysGoodbye = textLower.match(/пока|до свидан|прощай|bye|goodbye|see you/);
+        const userAskingQuestion = textLower.match(/^(что|как|какой|какая|какие|где|когда|почему|зачем|сколько|можно|есть|а |расскажи|покажи|опиши)\s/);
+        
+        // If user is satisfied or saying goodbye, skip auto-search entirely
+        if (userIsSatisfied || userSaysGoodbye) {
+            console.log('✅ USER IS SATISFIED/DONE - skipping auto-search');
+            console.log('   userIsSatisfied:', !!userIsSatisfied);
+            console.log('   userSaysGoodbye:', !!userSaysGoodbye);
+        }
+        const userAddingFilter = textLower.match(/звезд|зв[её]зд|звод|ультра|у[ль]тра|включ|вклуч|песок|песч|песоч|галька|галеч|галка|платформ|понтон|перв.*лин|втор.*лин|трет.*лин|первая|вторая|третья|линия|у\s*моря|beachfront|завтр|зафтр|полупансион|пансион/);
+        
+        // Check if user is changing required parameters (date, nights, adults, budget)
+        const userChangingParams = textLower.match(/(\d+)\s*(ноч|ночей|дней|день|марта|февраля|января|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря|взросл|человек|чел|руб|рубл|\d{5,})/);
+        
+        // Extract parameter changes from user message
+        let paramChanges = {};
+        if (userChangingParams) {
+            // Nights detection
+            const nightsMatch = textLower.match(/(\d+)\s*(ноч|ночей|дней)/);
+            if (nightsMatch) {
+                paramChanges.nights = nightsMatch[1];
+                console.log('🔄 PARAM CHANGE: nights =', paramChanges.nights);
+            }
+            
+            // Adults detection
+            const adultsMatch = textLower.match(/(\d+)\s*(взросл|человек|чел)/);
+            if (adultsMatch) {
+                paramChanges.adults = adultsMatch[1];
+                console.log('🔄 PARAM CHANGE: adults =', paramChanges.adults);
+            }
+            
+            // Budget detection
+            const budgetMatch = textLower.match(/(\d{5,})\s*(руб|рубл)?/);
+            if (budgetMatch) {
+                paramChanges.filter_price_max = budgetMatch[1];
+                console.log('🔄 PARAM CHANGE: filter_price_max =', paramChanges.filter_price_max);
+            }
+            
+            // Date detection (simple pattern for now)
+            const dateMatch = textLower.match(/(\d{1,2})\s*(марта|февраля|января|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)/);
+            if (dateMatch) {
+                const day = dateMatch[1].padStart(2, '0');
+                const monthMap = {
+                    'января': '01', 'февраля': '02', 'марта': '03', 'апреля': '04',
+                    'мая': '05', 'июня': '06', 'июля': '07', 'августа': '08',
+                    'сентября': '09', 'октября': '10', 'ноября': '11', 'декабря': '12'
+                };
+                const month = monthMap[dateMatch[2]];
+                const year = new Date().getFullYear();
+                const currentMonth = new Date().getMonth() + 1;
+                const targetMonth = parseInt(month);
+                const targetYear = targetMonth < currentMonth ? year + 1 : year;
+                paramChanges.start_date = `${targetYear}-${month}-${day}`;
+                console.log('🔄 PARAM CHANGE: start_date =', paramChanges.start_date);
+            }
+        }
+        
+        // Use both mergedParams and currentSearchParams to check for required fields
+        const combinedParams = { ...mergedParams, ...currentSearchParams };
+        
+        // Check if we have core required fields (price is optional, can default to high value)
+        const hasCoreFields = combinedParams.to_country && 
+                              combinedParams.start_date && 
+                              combinedParams.nights && 
+                              combinedParams.adults;
+        
+        // Also check if previous search was done (hotels in conversation means we had a successful search)
+        const hadPreviousSearch = conversationHistory.some(msg => 
+            msg.hotels && Array.isArray(msg.hotels) && msg.hotels.length > 0
+        );
+        
+        // Check if we had a previous successful search based on currentSearchParams having complete data
+        const hadSearchFromParams = currentSearchParams.to_country && 
+                                    currentSearchParams.start_date && 
+                                    currentSearchParams.nights;
+        
+        // Check if AI returned incomplete/empty searchParams
+        const aiSearchParams = aiResponse.searchParams || {};
+        const aiParamsKeys = Object.keys(aiSearchParams).filter(k => aiSearchParams[k] !== '' && aiSearchParams[k] !== undefined && aiSearchParams[k] !== null);
+        const aiHasIncompleteParams = aiParamsKeys.length < 5 || !aiSearchParams.to_country || !aiSearchParams.start_date;
+        
+        console.log('🔍 AUTO-SEARCH CHECK:', {
+            aiSaysSearching,
+            userAddingFilter: !!userAddingFilter,
+            userChangingParams: !!userChangingParams,
+            paramChanges: Object.keys(paramChanges).length > 0 ? paramChanges : 'none',
+            hasCoreFields,
+            hadPreviousSearch,
+            hadSearchFromParams,
+            aiHasIncompleteParams,
+            aiParamsKeysCount: aiParamsKeys.length,
+            combinedParamsKeys: Object.keys(combinedParams).filter(k => combinedParams[k]).length,
+            to_country: combinedParams.to_country,
+            start_date: combinedParams.start_date,
+            nights: combinedParams.nights,
+            adults: combinedParams.adults,
+            filter_price_max: combinedParams.filter_price_max,
+            aiChatMode: aiResponse.chatMode,
+            aiNextQuestion: (aiResponse.nextQuestion || '').substring(0, 80),
+            aiSearchParamsKeys: Object.keys(aiSearchParams).join(','),
+        });
+        
+        let finalSearchParams = aiResponse.searchParams;
+        let finalChatMode = aiResponse.chatMode;
+        
+        // If AI says "Ищу..." but didn't return proper searchParams, use combinedParams
+        // Trigger if: 
+        //   (AI says searching OR user adding filter OR user changing params) 
+        //   AND (we have core fields OR had previous search OR had search from params) 
+        //   AND AI returned incomplete params
+        //   AND user is NOT satisfied/done with the search
+        const canAutoSearch = hasCoreFields || hadPreviousSearch || hadSearchFromParams;
+        const userMakingChanges = userAddingFilter || userChangingParams;
+        const userNotDone = !userIsSatisfied && !userSaysGoodbye;
+        const shouldAutoSearch = (aiSaysSearching || userMakingChanges) && canAutoSearch && aiHasIncompleteParams && userNotDone;
+        
+        // NEW FIX: If AI says "Ищу..." but returned chatMode: true, override to false
+        // This handles the case where AI returns complete searchParams but still says chatMode: true
+        // But NOT if user is satisfied/done
+        const shouldForceChatModeFalse = (aiSaysSearching || userMakingChanges) && canAutoSearch && aiResponse.chatMode === true && userNotDone;
+        
+        console.log('🔍 shouldAutoSearch:', shouldAutoSearch, '(aiSaysSearching:', aiSaysSearching, ', userMakingChanges:', !!userMakingChanges, ', canAutoSearch:', canAutoSearch, ', aiHasIncompleteParams:', aiHasIncompleteParams, ', userNotDone:', userNotDone, ')');
+        console.log('🔍 shouldForceChatModeFalse:', shouldForceChatModeFalse);
+        
+        if (shouldAutoSearch) {
+            console.log('🔧 AUTO-SEARCH FIX: AI said "Ищу" but returned incomplete params. Using combinedParams.');
+            console.log('🔧 Trigger reason: aiSaysSearching=' + aiSaysSearching + ', hasCoreFields=' + hasCoreFields + ', hadPreviousSearch=' + hadPreviousSearch);
+            
+            // Start with combinedParams (has all required fields from history)
+            finalSearchParams = { ...combinedParams };
+            
+            // Copy any filters from AI response (in case AI extracted them from user message)
+            const filterKeys = ['filter_stars', 'filter_meals', 'filter_line', 'filter_beach_surface', 
+                               'filter_price_min', 'filter_price_max', 'filter_instant_confirm'];
+            filterKeys.forEach(key => {
+                if (aiSearchParams[key] !== undefined && aiSearchParams[key] !== '') {
+                    finalSearchParams[key] = aiSearchParams[key];
+                }
+            });
+            
+            // Apply user's parameter changes (nights, adults, budget, date)
+            if (Object.keys(paramChanges).length > 0) {
+                Object.assign(finalSearchParams, paramChanges);
+                console.log('🔧 AUTO-SEARCH FIX: Applied param changes:', paramChanges);
+            }
+            
+            // Extract filters from user message (backup if AI didn't extract them)
+            const userTextLower = text.toLowerCase();
+            
+            // Stars detection - more patterns, handle typos like "зводни" instead of "звезды"
+            if (!finalSearchParams.filter_stars) {
+                if (userTextLower.match(/толко\s*5|только\s*5|5\s*зв|5\s*звод|пять\s*зв/)) {
+                    finalSearchParams.filter_stars = '5';
+                } else if (userTextLower.match(/толко\s*4|только\s*4|4\s*зв|4\s*звод|четыре\s*зв/)) {
+                    finalSearchParams.filter_stars = '4';
+                } else if (userTextLower.match(/4-5|4\s*и\s*5/)) {
+                    finalSearchParams.filter_stars = '4,5';
+                } else if (userTextLower.match(/толко\s*3|только\s*3|3\s*зв|3\s*звод|три\s*зв/)) {
+                    finalSearchParams.filter_stars = '3';
+                }
+            }
+            
+            // Also extract stars from AI's nextQuestion
+            if (!finalSearchParams.filter_stars) {
+                const nextQLower = (aiResponse.nextQuestion || '').toLowerCase();
+                if (nextQLower.match(/5.*звёзд|5.*звезд|5-звёзд/)) {
+                    finalSearchParams.filter_stars = '5';
+                } else if (nextQLower.match(/4.*звёзд|4.*звезд|4-звёзд/)) {
+                    finalSearchParams.filter_stars = '4';
+                } else if (nextQLower.match(/3.*звёзд|3.*звезд|3-звёзд/)) {
+                    finalSearchParams.filter_stars = '3';
+                }
+            }
+            
+            // Meals detection - ALWAYS check user message for meal changes (not just when empty)
+            // Priority: check if user wants to CHANGE meals first
+            const userWantsBreakfast = userTextLower.match(/толко\s*завтр|только\s*завтр|завтрак|завтрик|зафтр/);
+            const userWantsHalfBoard = userTextLower.match(/полупансион|завтрак.*ужин|ужин.*завтрак/);
+            const userWantsFullBoard = userTextLower.match(/полный\s*пансион|трёхразов|трехразов/);
+            const userWantsAI = userTextLower.match(/(все|всё).*(включ|вклуч)/) && !userTextLower.match(/у[ль]?тра/);
+            const userWantsUAI = userTextLower.match(/у[ль]?тра.*(включ|вклуч)/);
+            const userDoesntWantUAI = userTextLower.match(/не\s*хочу.*(у[ль]?тра|все.*включ|всё.*включ)/);
+            
+            // Apply meal changes based on user request
+            if (userWantsBreakfast || userDoesntWantUAI) {
+                finalSearchParams.filter_meals = 'BB';
+                console.log('🔧 AUTO-SEARCH FIX: Set filter_meals = BB (breakfast only)');
+            } else if (userWantsHalfBoard) {
+                finalSearchParams.filter_meals = 'HB';
+                console.log('🔧 AUTO-SEARCH FIX: Set filter_meals = HB (half board)');
+            } else if (userWantsFullBoard) {
+                finalSearchParams.filter_meals = 'FB';
+                console.log('🔧 AUTO-SEARCH FIX: Set filter_meals = FB (full board)');
+            } else if (userWantsUAI) {
+                finalSearchParams.filter_meals = 'UAI';
+                console.log('🔧 AUTO-SEARCH FIX: Set filter_meals = UAI (ultra all inclusive)');
+            } else if (userWantsAI) {
+                finalSearchParams.filter_meals = 'AI';
+                console.log('🔧 AUTO-SEARCH FIX: Set filter_meals = AI (all inclusive)');
+            }
+            
+            // Also check AI's nextQuestion for meal type (only if user didn't specify)
+            if (!userWantsBreakfast && !userWantsHalfBoard && !userWantsFullBoard && !userWantsAI && !userWantsUAI && !userDoesntWantUAI) {
+                const nextQLower = (aiResponse.nextQuestion || '').toLowerCase();
+                if (nextQLower.match(/завтрак|breakfast/i) && !nextQLower.match(/включ/)) {
+                    finalSearchParams.filter_meals = 'BB';
+                } else if (nextQLower.match(/ультра.*(включ|вклуч)|ultra.*all.*incl/i)) {
+                    finalSearchParams.filter_meals = 'UAI';
+                } else if (nextQLower.match(/(все|всё).*(включ|вклуч)|all.*incl/i)) {
+                    finalSearchParams.filter_meals = 'AI';
+                }
+            }
+            
+            // Line detection - ALWAYS check for line changes (not just when empty)
+            const userWantsFirstLine = userTextLower.match(/перв.*лин|1.*лин|первая\s*лин|первой\s*лин|на\s*первой|у\s*моря|beachfront/);
+            const userWantsSecondLine = userTextLower.match(/втор.*лин|2.*лин|вторая\s*лин|второй\s*лин|на\s*второй/);
+            const userWantsThirdLine = userTextLower.match(/трет.*лин|3.*лин|третья\s*лин|третьей\s*лин|на\s*третьей/);
+            
+            if (userWantsFirstLine) {
+                finalSearchParams.filter_line = '1';
+                console.log('🔧 AUTO-SEARCH FIX: Set filter_line = 1 (first line)');
+            } else if (userWantsSecondLine) {
+                finalSearchParams.filter_line = '2';
+                console.log('🔧 AUTO-SEARCH FIX: Set filter_line = 2 (second line)');
+            } else if (userWantsThirdLine) {
+                finalSearchParams.filter_line = '3';
+                console.log('🔧 AUTO-SEARCH FIX: Set filter_line = 3 (third line)');
+            }
+            
+            // Beach surface detection - ALWAYS check for beach changes (not just when empty)
+            const userWantsSand = userTextLower.match(/песок|песч|писок|пляж.*песок|песоч/);
+            const userWantsPebble = userTextLower.match(/галька|галеч|галка/);
+            const userWantsMixed = userTextLower.match(/смешан|песок.*галь|галь.*песок/);
+            const userWantsPlatform = userTextLower.match(/платформ|понтон/);
+            
+            if (userWantsSand && !userWantsPebble) {
+                finalSearchParams.filter_beach_surface = 'SAND';
+                console.log('🔧 AUTO-SEARCH FIX: Set filter_beach_surface = SAND');
+            } else if (userWantsPebble && !userWantsSand) {
+                finalSearchParams.filter_beach_surface = 'PEBBLE';
+                console.log('🔧 AUTO-SEARCH FIX: Set filter_beach_surface = PEBBLE');
+            } else if (userWantsMixed || (userWantsSand && userWantsPebble)) {
+                finalSearchParams.filter_beach_surface = 'SAND+PEBBLE';
+                console.log('🔧 AUTO-SEARCH FIX: Set filter_beach_surface = SAND+PEBBLE');
+            } else if (userWantsPlatform) {
+                finalSearchParams.filter_beach_surface = 'PLATFORM';
+                console.log('🔧 AUTO-SEARCH FIX: Set filter_beach_surface = PLATFORM');
+            }
+            
+            // Ensure filter_price_max has a value (required for search)
+            if (!finalSearchParams.filter_price_max) {
+                // Try to extract from conversation history
+                const pricePattern = /(\d{5,})/;
+                for (const msg of conversationHistory) {
+                    if (msg.role === 'user' && msg.content) {
+                        const match = msg.content.match(pricePattern);
+                        if (match) {
+                            finalSearchParams.filter_price_max = match[1];
+                            console.log('🔧 AUTO-SEARCH FIX: Extracted filter_price_max from history:', match[1]);
+                            break;
+                        }
+                    }
+                }
+                // If still no price, use a high default
+                if (!finalSearchParams.filter_price_max) {
+                    finalSearchParams.filter_price_max = '500000';
+                    console.log('🔧 AUTO-SEARCH FIX: Using default filter_price_max: 500000');
+                }
+            }
+            
+            // Ensure kids fields are set (required by frontend)
+            if (finalSearchParams.kids === undefined || finalSearchParams.kids === null || finalSearchParams.kids === '') {
+                finalSearchParams.kids = '0';
+            }
+            if (!finalSearchParams.kids_ages || !Array.isArray(finalSearchParams.kids_ages)) {
+                finalSearchParams.kids_ages = [];
+            }
+            
+            // Ensure from_city/from_country is set (required by frontend)
+            if (!finalSearchParams.from_city && !finalSearchParams.from_country) {
+                finalSearchParams.from_country = 'RU';
+                finalSearchParams.from_city = 'Moscow';
+            } else if (!finalSearchParams.from_city && finalSearchParams.from_country === 'RU') {
+                finalSearchParams.from_city = 'Moscow';
+            }
+            
+            // Ensure adults is set
+            if (!finalSearchParams.adults) {
+                finalSearchParams.adults = '2';
+            }
+            
+            // DEFAULT: Set filter_stars to 5 if not specified
+            if (!finalSearchParams.filter_stars) {
+                finalSearchParams.filter_stars = '5';
+                console.log('🔧 AUTO-SEARCH FIX: Using default filter_stars: 5');
+            }
+            
+            // Reset page_number for new filter search
+            finalSearchParams.page_number = 1;
+            finalChatMode = false;
+            
+            console.log('🔧 AUTO-SEARCH FIX: Final searchParams:', JSON.stringify(finalSearchParams, null, 2));
+        } else if (shouldForceChatModeFalse) {
+            // AI returned complete params but chatMode: true - force chatMode to false
+            console.log('🔧 FORCE CHAT MODE FIX: AI said "Ищу" with complete params but chatMode=true. Forcing chatMode=false.');
+            finalChatMode = false;
+            
+            // Apply user's parameter changes (nights, adults, budget, date)
+            if (Object.keys(paramChanges).length > 0) {
+                Object.assign(finalSearchParams, paramChanges);
+                console.log('🔧 FORCE CHAT MODE FIX: Applied param changes:', paramChanges);
+            }
+            
+            // Also extract filter from user message and apply to finalSearchParams
+            const userTextLower = text.toLowerCase();
+            
+            // Meals detection - check if user wants to CHANGE meals
+            const userWantsBreakfast = userTextLower.match(/толко\s*завтр|только\s*завтр|завтрак|завтрик|зафтр/);
+            const userWantsHalfBoard = userTextLower.match(/полупансион|завтрак.*ужин|ужин.*завтрак/);
+            const userWantsFullBoard = userTextLower.match(/полный\s*пансион|трёхразов|трехразов/);
+            const userWantsAI = userTextLower.match(/(все|всё).*(включ|вклуч)/) && !userTextLower.match(/у[ль]?тра/);
+            const userWantsUAI = userTextLower.match(/у[ль]?тра.*(включ|вклуч)/);
+            const userDoesntWantUAI = userTextLower.match(/не\s*хочу.*(у[ль]?тра|все.*включ|всё.*включ)/);
+            
+            // Apply meal changes based on user request
+            if (userWantsBreakfast || userDoesntWantUAI) {
+                finalSearchParams.filter_meals = 'BB';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_meals = BB (breakfast only)');
+            } else if (userWantsHalfBoard) {
+                finalSearchParams.filter_meals = 'HB';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_meals = HB (half board)');
+            } else if (userWantsFullBoard) {
+                finalSearchParams.filter_meals = 'FB';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_meals = FB (full board)');
+            } else if (userWantsUAI) {
+                finalSearchParams.filter_meals = 'UAI';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_meals = UAI (ultra all inclusive)');
+            } else if (userWantsAI) {
+                finalSearchParams.filter_meals = 'AI';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_meals = AI (all inclusive)');
+            }
+            
+            // Check for stars
+            if (userTextLower.match(/толко\s*5|только\s*5|5\s*зв|5\s*звод|пять\s*зв/)) {
+                finalSearchParams.filter_stars = '5';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_stars = 5');
+            } else if (userTextLower.match(/толко\s*4|только\s*4|4\s*зв|4\s*звод|четыре\s*зв/)) {
+                finalSearchParams.filter_stars = '4';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_stars = 4');
+            } else if (userTextLower.match(/толко\s*3|только\s*3|3\s*зв|3\s*звод|три\s*зв/)) {
+                finalSearchParams.filter_stars = '3';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_stars = 3');
+            }
+            
+            // Check for line filter
+            const userWantsFirstLine = userTextLower.match(/перв.*лин|1.*лин|первая\s*лин|первой\s*лин|на\s*первой|у\s*моря|beachfront/);
+            const userWantsSecondLine = userTextLower.match(/втор.*лин|2.*лин|вторая\s*лин|второй\s*лин|на\s*второй/);
+            const userWantsThirdLine = userTextLower.match(/трет.*лин|3.*лин|третья\s*лин|третьей\s*лин|на\s*третьей/);
+            
+            if (userWantsFirstLine) {
+                finalSearchParams.filter_line = '1';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_line = 1 (first line)');
+            } else if (userWantsSecondLine) {
+                finalSearchParams.filter_line = '2';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_line = 2 (second line)');
+            } else if (userWantsThirdLine) {
+                finalSearchParams.filter_line = '3';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_line = 3 (third line)');
+            }
+            
+            // Check for beach surface filter
+            const userWantsSand = userTextLower.match(/песок|песч|писок|пляж.*песок|песоч/);
+            const userWantsPebble = userTextLower.match(/галька|галеч|галка/);
+            const userWantsMixed = userTextLower.match(/смешан|песок.*галь|галь.*песок/);
+            const userWantsPlatform = userTextLower.match(/платформ|понтон/);
+            
+            if (userWantsSand && !userWantsPebble) {
+                finalSearchParams.filter_beach_surface = 'SAND';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_beach_surface = SAND');
+            } else if (userWantsPebble && !userWantsSand) {
+                finalSearchParams.filter_beach_surface = 'PEBBLE';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_beach_surface = PEBBLE');
+            } else if (userWantsMixed || (userWantsSand && userWantsPebble)) {
+                finalSearchParams.filter_beach_surface = 'SAND+PEBBLE';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_beach_surface = SAND+PEBBLE');
+            } else if (userWantsPlatform) {
+                finalSearchParams.filter_beach_surface = 'PLATFORM';
+                console.log('🔧 FORCE CHAT MODE FIX: Set filter_beach_surface = PLATFORM');
+            }
+            
+            // Reset page_number for new filter search
+            finalSearchParams.page_number = 1;
+            
+            console.log('🔧 FORCE CHAT MODE FIX: Final searchParams:', JSON.stringify(finalSearchParams, null, 2));
+        } else if (aiSaysSearching || userMakingChanges) {
+            console.log('⚠️ AUTO-SEARCH NOT TRIGGERED: AI says "Ищу" or user making changes, but conditions not met');
+            console.log('   - aiSaysSearching:', aiSaysSearching);
+            console.log('   - userAddingFilter:', !!userAddingFilter);
+            console.log('   - userChangingParams:', !!userChangingParams);
+            console.log('   - paramChanges:', paramChanges);
+            console.log('   - hasCoreFields:', hasCoreFields);
+            console.log('   - hadPreviousSearch:', hadPreviousSearch);
+            console.log('   - hadSearchFromParams:', hadSearchFromParams);
+            console.log('   - canAutoSearch:', canAutoSearch);
+            console.log('   - aiHasIncompleteParams:', aiHasIncompleteParams);
+            console.log('   - combinedParams:', JSON.stringify(combinedParams, null, 2));
+        }
+
+        // GLOBAL DEFAULT: Set filter_stars to 5 if not specified and we're about to search
+        // This applies to ALL search cases (not just AUTO-SEARCH FIX)
+        if (finalChatMode === false && finalSearchParams && !finalSearchParams.filter_stars) {
+            finalSearchParams.filter_stars = '5';
+            console.log('🔧 GLOBAL DEFAULT: Set filter_stars = 5');
+        }
+
+        // Log full response
+        console.log('\n========== 📤 TOUR-ASSISTANT RESPONSE ==========');
+        console.log('🔄 chatMode:', finalChatMode);
+        console.log('💬 nextQuestion:', aiResponse.nextQuestion?.substring(0, 150) + (aiResponse.nextQuestion?.length > 150 ? '...' : ''));
+        console.log('📊 searchParams:', JSON.stringify(finalSearchParams, null, 2));
+        console.log('================================================\n');
+
         // Return AI response with chatMode and merged searchParams
         res.json({
-            chatMode: aiResponse.chatMode !== undefined ? aiResponse.chatMode : false,
+            chatMode: finalChatMode !== undefined ? finalChatMode : false,
             nextQuestion: aiResponse.nextQuestion,
-            searchParams: aiResponse.searchParams,
+            searchParams: finalSearchParams,
         });
 
     } catch (error) {
