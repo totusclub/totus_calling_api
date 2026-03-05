@@ -37,10 +37,11 @@ module.exports = pool;
 
 const userDb = {
     // Get user by email and password (for web login)
+    // Only returns user if access = 1 (or null, default)
     async getUserByEmailAndPassword(email, password) {
         try {
             const [rows] = await pool.execute(
-                'SELECT * FROM users WHERE email = ? AND password = ?',
+                'SELECT * FROM users WHERE email = ? AND password = ? AND COALESCE(access, 1) = 1',
                 [email, password]
             );
             return rows.length > 0 ? rows[0] : null;
@@ -161,11 +162,29 @@ const userDb = {
     async getAllUsers() {
         try {
             const [rows] = await pool.execute(
-                'SELECT id, loyalty_id, name, f_name, l_name, email, phone, role, voipToken, socketId, online, date FROM users'
+                'SELECT id, loyalty_id, name, f_name, l_name, email, phone, role, voipToken, socketId, online, date, COALESCE(access, 1) as access FROM users'
             );
             return rows;
         } catch (error) {
             console.error('Error getting all users:', error);
+            throw error;
+        }
+    },
+
+    // Update user access (1 = enabled, 0 = disabled)
+    async updateUserAccess(userId, access) {
+        try {
+            const accessVal = access ? 1 : 0;
+            const [result] = await pool.execute(
+                'UPDATE users SET access = ? WHERE id = ?',
+                [accessVal, userId]
+            );
+            if (result.affectedRows > 0) {
+                return await this.getUserById(userId);
+            }
+            return null;
+        } catch (error) {
+            console.error('Error updating user access:', error);
             throw error;
         }
     },

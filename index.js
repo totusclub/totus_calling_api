@@ -239,6 +239,7 @@ app.get('/api/users', async (req, res) => {
         online: user.online === 1,
         hasVoipToken: !!user.voipToken,
         hasSocket: !!user.socketId,
+        access: (user.access ?? 1) === 1,
       })),
     });
   } catch (error) {
@@ -299,11 +300,37 @@ app.get('/api/users/by-id/:userId', async (req, res) => {
         online: user.online === 1,
         hasVoipToken: !!user.voipToken,
         hasSocket: !!user.socketId,
+        access: (user.access ?? 1) === 1,
       },
     });
   } catch (error) {
     console.error('[get-user-by-id] error:', error);
     res.status(500).json({error: 'Failed to get user: ' + error.message});
+  }
+});
+
+// Update user access (1 or 0)
+// PATCH /api/users/:userId/access
+// body: { access: boolean | 0 | 1 }
+app.patch('/api/users/:userId/access', async (req, res) => {
+  const {userId} = req.params;
+  const {access} = req.body || {};
+  const accessVal = access === true || access === 1;
+  try {
+    const user = await userDb.updateUserAccess(parseInt(userId, 10), accessVal);
+    if (!user) {
+      return res.status(404).json({error: 'User not found'});
+    }
+    res.json({
+      ok: true,
+      user: {
+        id: user.id,
+        access: user.access === 1,
+      },
+    });
+  } catch (error) {
+    console.error('[update-user-access] error:', error);
+    res.status(500).json({error: 'Failed to update user access: ' + error.message});
   }
 });
 
