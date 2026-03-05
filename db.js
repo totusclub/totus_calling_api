@@ -37,11 +37,11 @@ module.exports = pool;
 
 const userDb = {
     // Get user by email and password (for web login)
-    // Only returns user if access = 1 (or null, default)
+    // Only returns user if access = 0 (Доступ). access = 1 means Заблок. (blocked)
     async getUserByEmailAndPassword(email, password) {
         try {
             const [rows] = await pool.execute(
-                'SELECT * FROM users WHERE email = ? AND password = ? AND COALESCE(access, 1) = 1',
+                'SELECT * FROM users WHERE email = ? AND password = ? AND COALESCE(access, 0) = 0',
                 [email, password]
             );
             return rows.length > 0 ? rows[0] : null;
@@ -162,7 +162,7 @@ const userDb = {
     async getAllUsers() {
         try {
             const [rows] = await pool.execute(
-                'SELECT id, loyalty_id, name, f_name, l_name, email, phone, role, voipToken, socketId, online, date, COALESCE(access, 1) as access FROM users'
+                'SELECT id, loyalty_id, name, f_name, l_name, email, phone, role, voipToken, socketId, online, date, access FROM users'
             );
             return rows;
         } catch (error) {

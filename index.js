@@ -239,7 +239,7 @@ app.get('/api/users', async (req, res) => {
         online: user.online === 1,
         hasVoipToken: !!user.voipToken,
         hasSocket: !!user.socketId,
-        access: (user.access ?? 1) === 1,
+        access: user.access != null ? user.access : 0,
       })),
     });
   } catch (error) {
