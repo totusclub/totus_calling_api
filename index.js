@@ -217,6 +217,53 @@ app.post('/api/register-device', async (req, res) => {
   }
 });
 
+// Unregister device on logout - clears voipToken/socketId so the device
+// no longer receives calls for that user. Required for account switching.
+// POST /api/unregister-device
+// body: { loyaltyId: string } - the user who is logging out
+app.post('/api/unregister-device', async (req, res) => {
+  const {loyaltyId} = req.body || {};
+  console.log('[unregister-device] loyaltyId=', loyaltyId);
+
+  if (!loyaltyId) {
+    return res.status(400).json({error: 'loyaltyId is required'});
+  }
+
+  try {
+    const user = await userDb.getUserDeviceInfoByLoyaltyId(loyaltyId);
+    if (!user) {
+      return res.status(404).json({error: 'User not found with loyalty_id: ' + loyaltyId});
+    }
+
+    // Clear voipToken and socketId in DB - stops backend from sending VoIP pushes to this device for this user
+    await userDb.updateUserDeviceInfo(user.id, null, null);
+    await userDb.updateUserSocketId(user.id, null);
+
+    // Remove from in-memory maps so device no longer receives calls for this user
+    const deviceIdToRemove = loyaltyIdToDeviceId.get(loyaltyId);
+    if (deviceIdToRemove) {
+      const sockId = deviceSockets.get(deviceIdToRemove);
+      if (sockId) {
+        socketDevices.delete(sockId);
+      }
+      deviceSockets.delete(deviceIdToRemove);
+      const device = devices.get(deviceIdToRemove);
+      if (device && device.loyaltyId === loyaltyId) {
+        devices.delete(deviceIdToRemove);
+      }
+      loyaltyIdToDeviceId.delete(loyaltyId);
+    }
+
+    // Broadcast user offline
+    io.emit('user-status', {loyaltyId, online: false});
+    console.log('[unregister-device] Cleared device for user', loyaltyId);
+    res.json({ok: true});
+  } catch (error) {
+    console.error('[unregister-device] error:', error);
+    res.status(500).json({error: 'Failed to unregister device: ' + error.message});
+  }
+});
+
 // ======================
 // User Management
 // ======================
@@ -807,6 +854,7 @@ app.post('/api/calls', async (req, res) => {
 
       // Payload received by AppDelegate / RNVoipPushNotificationManager
       // Note: AppDelegate expects these keys: callId, handle, callerName, uuid (optional)
+      // toLoyaltyId: callee's loyaltyId - client uses this to ignore pushes for other users after account switch
       note.payload = {
         callId,
         uuid: callId, // Some libraries expect uuid field
@@ -814,6 +862,7 @@ app.post('/api/calls', async (req, res) => {
         callerName: finalCallerName,
         caller_name: finalCallerName, // Alternative key name
         from: targetDeviceId, // Alternative key name
+        toLoyaltyId: callee.loyaltyId || targetLoyaltyId || null,
         offer: {
           type: offer.type,
           sdp: offer.sdp,
@@ -1262,7 +1311,16 @@ io.on('connection', socket => {
     }
     
     if (toSocketId) {
-      io.to(toSocketId).emit('offer', {callId, offer, fromDeviceId});
+      const call = callId ? calls.get(callId) : null;
+      const toLoyaltyId = call?.toLoyaltyId || null;
+      io.to(toSocketId).emit('offer', {
+        callId,
+        offer,
+        fromDeviceId,
+        toLoyaltyId,
+        fromLoyaltyId: call?.fromLoyaltyId || null,
+        callerName: call?.callerName || null,
+      });
       console.log('[socket:offer] ✅ Forwarded to socket:', toSocketId, 'for device:', toDeviceId || 'from call object');
     } else {
       console.warn('[socket:offer] ⚠️ Target device not connected via socket:', toDeviceId, '- offer should be sent via HTTP/VoIP push');
