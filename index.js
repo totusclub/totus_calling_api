@@ -11,11 +11,13 @@
 //   npm start
 
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const {v4: uuidv4} = require('uuid');
 const apn = require('apn');
+const admin = require('firebase-admin');
 const http = require('http');
 const {Server} = require('socket.io');
 const {userDb, contactDb, favoriteDb} = require('./db');
@@ -113,6 +115,102 @@ const apnProvider = new apn.Provider(providerOpts);
 // Often: "<bundle-id>.voip" or just your bundle id if configured that way.
 const APN_VOIP_TOPIC = process.env.APN_VOIP_TOPIC || 'app.totus.club.voip';
 
+let firebaseReady = false;
+try {
+  if (!admin.apps.length) {
+    const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH
+      ? path.resolve(process.env.FIREBASE_SERVICE_ACCOUNT_PATH)
+      : null;
+    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || null;
+    const explicitProjectId = process.env.FIREBASE_PROJECT_ID || null;
+
+    let credential = null;
+    let resolvedProjectId = explicitProjectId || undefined;
+
+    if (serviceAccountJson) {
+      const parsed = JSON.parse(serviceAccountJson);
+      credential = admin.credential.cert(parsed);
+      resolvedProjectId = resolvedProjectId || parsed.project_id;
+      console.log('[fcm] Using FIREBASE_SERVICE_ACCOUNT_JSON');
+    } else if (serviceAccountPath && fs.existsSync(serviceAccountPath)) {
+      const parsed = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+      credential = admin.credential.cert(parsed);
+      resolvedProjectId = resolvedProjectId || parsed.project_id;
+      console.log('[fcm] Using FIREBASE_SERVICE_ACCOUNT_PATH:', serviceAccountPath);
+    } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+      const gacPath = path.resolve(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+      if (fs.existsSync(gacPath)) {
+        const parsed = JSON.parse(fs.readFileSync(gacPath, 'utf8'));
+        resolvedProjectId = resolvedProjectId || parsed.project_id;
+      }
+      credential = admin.credential.applicationDefault();
+      console.log('[fcm] Using GOOGLE_APPLICATION_CREDENTIALS');
+    } else {
+      // Auto-pick local service account file from backend folder.
+      const localCandidates = [
+        path.join(__dirname, 'totusapp-2ab2b-firebase-adminsdk-fbsvc-c36c3f7233.json'),
+        path.join(__dirname, 'totus-voice-ac1464f87501.json'),
+        path.join(__dirname, 'totusvoice-911c60095e2f.json'),
+      ];
+
+      const matchedLocal = localCandidates.find(p => fs.existsSync(p));
+      if (matchedLocal) {
+        const parsed = JSON.parse(fs.readFileSync(matchedLocal, 'utf8'));
+        credential = admin.credential.cert(parsed);
+        resolvedProjectId = resolvedProjectId || parsed.project_id;
+        console.log('[fcm] Using local service account file:', matchedLocal);
+      } else {
+        // Last resort: relies on runtime environment metadata credentials.
+        credential = admin.credential.applicationDefault();
+        console.warn('[fcm] No service account file/env found; using applicationDefault credentials');
+      }
+    }
+
+    const initOptions = {credential};
+    if (resolvedProjectId) {
+      initOptions.projectId = resolvedProjectId;
+    }
+
+    admin.initializeApp(initOptions);
+    console.log('[fcm] Firebase projectId:', resolvedProjectId || '(auto-detect)');
+  }
+  firebaseReady = true;
+  console.log('[fcm] Firebase Admin initialized');
+} catch (e) {
+  firebaseReady = false;
+  console.warn('[fcm] Firebase Admin not initialized:', e.message);
+}
+
+function inferPlatformFromPushToken(pushToken) {
+  if (!pushToken) return null;
+  // APNs VoIP tokens are usually long hex strings; FCM tokens are mixed chars with ":".
+  const isApnsLike = /^[a-fA-F0-9]{64,}$/.test(pushToken);
+  return isApnsLike ? 'ios' : 'android';
+}
+
+function normalizeMobilePlatform(platform) {
+  return platform === 'ios' || platform === 'android' ? platform : null;
+}
+
+function resolveKnownPlatform({targetDeviceId, targetLoyaltyId, fallbackToken}) {
+  if (targetDeviceId && devices.has(targetDeviceId)) {
+    const fromDevice = devices.get(targetDeviceId);
+    const normalized = normalizeMobilePlatform(fromDevice?.platform);
+    if (normalized) return normalized;
+  }
+
+  if (targetLoyaltyId) {
+    const mappedDeviceId = loyaltyIdToDeviceId.get(targetLoyaltyId);
+    if (mappedDeviceId && devices.has(mappedDeviceId)) {
+      const fromMappedDevice = devices.get(mappedDeviceId);
+      const normalized = normalizeMobilePlatform(fromMappedDevice?.platform);
+      if (normalized) return normalized;
+    }
+  }
+
+  return inferPlatformFromPushToken(fallbackToken);
+}
+
 // ======================
 // Authentication (Login)
 // ======================
@@ -165,18 +263,28 @@ app.post('/api/web/login', async (req, res) => {
 // Device Registration
 // ======================
 
-// Called from the app when a VoIP token is received.
+// Called from the app when a push token is received.
 // POST /api/register-device
-// body: { deviceId: string, loyaltyId: string (or userId for backward compatibility), voipToken: string, platform: 'ios' | 'android' | 'web' }
+// body: {
+//   deviceId: string,
+//   loyaltyId: string (or userId for backward compatibility),
+//   platform: 'ios' | 'android' | 'web',
+//   voipToken?: string, // iOS
+//   fcmToken?: string   // Android
+// }
 app.post('/api/register-device', async (req, res) => {
-  const {deviceId, loyaltyId, userId, voipToken, platform} = req.body || {};
-  console.log('register-device', deviceId, loyaltyId, userId, voipToken, platform);
+  const {deviceId, loyaltyId, userId, voipToken, fcmToken, platform} = req.body || {};
+  const pushToken = voipToken || fcmToken;
+  console.log('register-device', deviceId, loyaltyId, userId, platform, {
+    hasVoipToken: !!voipToken,
+    hasFcmToken: !!fcmToken,
+  });
   
   // Use loyaltyId if provided, otherwise try userId for backward compatibility
   const targetLoyaltyId = loyaltyId || userId;
   
-  if (!deviceId || !targetLoyaltyId || !voipToken) {
-    return res.status(400).json({error: 'deviceId, loyaltyId (or userId), and voipToken are required'});
+  if (!deviceId || !targetLoyaltyId || !pushToken) {
+    return res.status(400).json({error: 'deviceId, loyaltyId (or userId), and push token are required'});
   }
 
   try {
@@ -186,15 +294,15 @@ app.post('/api/register-device', async (req, res) => {
       return res.status(404).json({error: 'User not found with loyalty_id: ' + targetLoyaltyId});
     }
 
-    // Update user's voipToken and socketId in database
+    // Keep existing DB field name (voipToken) for backward compatibility.
     const socketId = deviceSockets.get(deviceId) || null;
-    await userDb.updateUserDeviceInfo(user.id, voipToken, socketId);
+    await userDb.updateUserDeviceInfo(user.id, pushToken, socketId);
 
     // Also store in memory for quick access
     devices.set(deviceId, {
       userId: user.id,
       loyaltyId: user.loyalty_id,
-      voipToken,
+      voipToken: pushToken,
       platform: platform || 'ios',
       socketId,
     });
@@ -210,6 +318,13 @@ app.post('/api/register-device', async (req, res) => {
     }
 
     console.log('[register-device] deviceId=', deviceId, 'loyaltyId=', user.loyalty_id, 'userId=', user.id, 'platform=', platform);
+    console.log('[CALLTRACE] register-device', {
+      deviceId: deviceId ? `${String(deviceId).slice(0, 20)}...` : null,
+      loyaltyId: user.loyalty_id,
+      platform: platform || 'unknown',
+      hasPushToken: !!pushToken,
+      pushTokenPreview: pushToken ? `${String(pushToken).slice(0, 20)}...` : null,
+    });
     res.json({ok: true, userId: user.id, loyaltyId: user.loyalty_id});
   } catch (error) {
     console.error('[register-device] error:', error);
@@ -707,10 +822,16 @@ app.post('/api/calls', async (req, res) => {
         return res.status(404).json({error: 'Target user not found'});
       }
       
-      // Determine platform: web if has socketId, iOS if has voipToken
-      // Allow calling offline users if they have voipToken (VoIP push works even when offline)
+      // Determine platform: prefer mobile token platform when token exists.
+      // IMPORTANT: mobile user may still have socketId, but must remain ios/android
+      // so background/closed pushes are still sent.
       const isWeb = !!user.socketId;
       const isPhone = !!user.voipToken;
+      const inferredPhonePlatform = resolveKnownPlatform({
+        targetDeviceId,
+        targetLoyaltyId,
+        fallbackToken: user.voipToken || null,
+      });
       
       if (!isWeb && !isPhone) {
         return res.status(404).json({error: 'Target user not registered for calls (no socketId or voipToken)'});
@@ -720,10 +841,10 @@ app.post('/api/calls', async (req, res) => {
         userId: user.id,
         loyaltyId: user.loyalty_id,
         voipToken: user.voipToken || null,
-        platform: isWeb ? 'web' : 'ios',
+        platform: isPhone ? (inferredPhonePlatform || 'android') : 'web',
         socketId: user.socketId || null,
       };
-      targetDeviceId = isWeb ? user.socketId : (user.voipToken || targetDeviceId);
+      targetDeviceId = isPhone ? (user.voipToken || targetDeviceId) : user.socketId;
     } catch (error) {
       console.error('[call] error getting user:', error);
       return res.status(500).json({error: 'Failed to get target user'});
@@ -778,6 +899,10 @@ app.post('/api/calls', async (req, res) => {
     finalCallerName = callerName || 'Incoming call';
   }
 
+  const callerDisplayLabel = callerLoyaltyId
+    ? `${finalCallerName} (${callerLoyaltyId})`
+    : finalCallerName;
+
   // Auto-save contact: When caller calls someone, save the callee to caller's contacts
   // When callee receives a call, save the caller to callee's contacts
   if (callerLoyaltyId && targetLoyaltyId && callerUser && callerUser.id) {
@@ -811,16 +936,35 @@ app.post('/api/calls', async (req, res) => {
   });
 
   console.log('[create-call] callId=', callId, '=> deviceId=', targetDeviceId, 'platform=', callee.platform);
+  console.log('[CALLDEBUG] create-call', {
+    callId,
+    fromDeviceId: fromDeviceId || null,
+    fromLoyaltyId: callerLoyaltyId || null,
+    toDeviceId: targetDeviceId || null,
+    toLoyaltyId: callee.loyaltyId || targetLoyaltyId || null,
+    platform: callee.platform,
+    hasSocket: !!callee.socketId,
+    hasPushToken: !!callee.voipToken,
+  });
+  console.log('[CALLTRACE] platform-resolved', {
+    callId,
+    resolvedPlatform: callee.platform,
+    hasSocket: !!callee.socketId,
+    hasVoipToken: !!callee.voipToken,
+    targetDeviceId: targetDeviceId ? `${String(targetDeviceId).slice(0, 20)}...` : null,
+  });
 
-  // Determine if callee is web or phone
-  // Allow calling offline users if they have voipToken (VoIP push works even when offline)
+  // Determine target platform explicitly.
+  // IMPORTANT: Android must never go through APNs path.
   const calleeSocketId = callee.socketId || deviceSockets.get(targetDeviceId);
-  const isCalleeWeb = callee.platform === 'web' || !!calleeSocketId;
-  const isCalleePhone = (callee.platform === 'ios' && !!callee.voipToken) || (!!callee.voipToken && !callee.socketId);
+  const isCalleeIos = callee.platform === 'ios' && !!callee.voipToken;
+  const isCalleeAndroid = callee.platform === 'android' && !!callee.voipToken;
+  const isCalleeWeb = callee.platform === 'web' || (!!calleeSocketId && !isCalleeIos && !isCalleeAndroid);
 
-  // For web clients: send offer via socket
-  if (isCalleeWeb && calleeSocketId) {
-    console.log('[call] Sending offer to web client via socket:', calleeSocketId);
+  // Send offer via socket whenever peer is online (web/mobile).
+  // Push is still used for offline/background phone clients.
+  if (calleeSocketId) {
+    console.log('[call] Sending offer to online client via socket:', calleeSocketId);
     io.to(calleeSocketId).emit('offer', {
       callId,
       offer: {
@@ -843,8 +987,8 @@ app.post('/api/calls', async (req, res) => {
     });
   }
 
-  // For phone clients: send VoIP push notification
-  if (isCalleePhone) {
+  // iOS: send VoIP push notification via APNs
+  if (isCalleeIos) {
     try {
       const note = new apn.Notification();
 
@@ -858,10 +1002,12 @@ app.post('/api/calls', async (req, res) => {
       note.payload = {
         callId,
         uuid: callId, // Some libraries expect uuid field
-        handle: targetDeviceId,
+        handle: callerDisplayLabel || 'caller',
         callerName: finalCallerName,
+        callerDisplay: callerDisplayLabel,
         caller_name: finalCallerName, // Alternative key name
-        from: targetDeviceId, // Alternative key name
+        from: callerLoyaltyId || fromDeviceId || 'caller', // Alternative key name
+        fromLoyaltyId: callerLoyaltyId || '',
         toLoyaltyId: callee.loyaltyId || targetLoyaltyId || null,
         offer: {
           type: offer.type,
@@ -871,7 +1017,7 @@ app.post('/api/calls', async (req, res) => {
 
       console.log('[apn] VoIP push payload:', {
         callId,
-        handle: targetDeviceId,
+        handle: callerDisplayLabel || 'caller',
         callerName: finalCallerName,
         topic: APN_VOIP_TOPIC,
         voipTokenLength: callee.voipToken ? callee.voipToken.length : 0,
@@ -911,15 +1057,99 @@ app.post('/api/calls', async (req, res) => {
         targetDeviceId,
         voipToken: callee.voipToken ? `${callee.voipToken.substring(0, 20)}...` : 'null',
       });
-      res.status(500).json({error: 'APNs send failed: ' + err.message});
+      // If peer is online via socket, don't fail the whole call creation.
+      if (calleeSocketId) {
+        res.json({
+          ok: true,
+          callId,
+          warning: 'APNs send failed, but socket delivery succeeded',
+        });
+      } else {
+        res.status(500).json({error: 'APNs send failed: ' + err.message});
+      }
+    }
+  } else if (isCalleeAndroid) {
+    if (!firebaseReady) {
+      console.warn('[create-call] Android push skipped: Firebase not configured');
+      res.json({ok: true, callId, note: 'Android push skipped (Firebase not configured)'});
+    } else {
+      try {
+        const androidToken = callee.voipToken || targetDeviceId;
+        const message = {
+          token: androidToken,
+          data: {
+            callId,
+            uuid: callId,
+            handle: callerDisplayLabel || 'caller',
+            callerName: finalCallerName || 'Incoming call',
+            callerDisplay: callerDisplayLabel || finalCallerName || 'Incoming call',
+            caller_name: finalCallerName || 'Incoming call',
+            fromLoyaltyId: callerLoyaltyId || '',
+            toLoyaltyId: callee.loyaltyId || targetLoyaltyId || '',
+          },
+          android: {
+            priority: 'high',
+            ttl: 30 * 1000,
+            directBootOk: true,
+          },
+        };
+
+        const fcmMessageId = await admin.messaging().send(message);
+        console.log('[fcm] Sent Android incoming call push', {
+          callId,
+          targetDeviceId: androidToken ? `${androidToken.substring(0, 24)}...` : null,
+          fcmMessageId,
+        });
+        console.log('[CALLTRACE] fcm-send-success', {
+          callId,
+          targetDeviceId: androidToken ? `${androidToken.substring(0, 24)}...` : null,
+          fcmMessageId,
+        });
+        console.log('[CALLDEBUG] fcm-send-success', {
+          callId,
+          fcmMessageId,
+          tokenPreview: androidToken ? `${androidToken.substring(0, 24)}...` : null,
+        });
+
+        res.json({ok: true, callId, fcmMessageId});
+      } catch (err) {
+        console.error('[fcm] send error', {
+          callId,
+          targetDeviceId: targetDeviceId ? `${targetDeviceId.substring(0, 24)}...` : null,
+          message: err.message,
+        });
+        console.error('[CALLTRACE] fcm-send-failed', {
+          callId,
+          targetDeviceId: targetDeviceId ? `${targetDeviceId.substring(0, 24)}...` : null,
+          message: err.message,
+        });
+        console.error('[CALLDEBUG] fcm-send-failed', {
+          callId,
+          message: err.message,
+          tokenPreview: targetDeviceId ? `${targetDeviceId.substring(0, 24)}...` : null,
+        });
+        // Don't return 500 to web caller: keep call API stable and report delivery status.
+        // For online peers, socket already delivered offer; for offline peers, client can retry.
+        res.json({
+          ok: false,
+          callId,
+          delivery: calleeSocketId ? 'socket-only' : 'none',
+          warning: 'FCM send failed',
+          error: err.message,
+        });
+      }
     }
   } else if (isCalleeWeb) {
     // Web client - already sent via socket above
     res.json({ok: true, callId, platform: 'web'});
   } else {
-    // TODO: Android – send FCM data message here
-    console.log('[create-call] Android push not implemented, deviceId=', targetDeviceId);
-    res.json({ok: true, callId, note: 'Android push not implemented yet'});
+    console.warn('[create-call] Unknown callee platform path', {
+      callId,
+      platform: callee.platform,
+      hasVoipToken: !!callee.voipToken,
+      hasSocket: !!calleeSocketId,
+    });
+    res.status(400).json({error: 'Callee is not reachable for calls'});
   }
   
   // Also notify caller (if we know its device and socket)
@@ -967,6 +1197,12 @@ app.post('/api/calls/:callId/answer', (req, res) => {
 
   call.answer = answer;
   calls.set(callId, call);
+  console.log('[CALLDEBUG] answer-received', {
+    callId,
+    fromDeviceId: deviceId || null,
+    hasSdp: !!answer?.sdp,
+    sdpLength: answer?.sdp?.length || 0,
+  });
 
   console.log('[answer] ✅ Answer stored for call:', callId, 'from deviceId:', deviceId);
   console.log('[answer] Call info:', {
@@ -1040,6 +1276,89 @@ app.post('/api/calls/:callId/answer', (req, res) => {
 });
 
 // Caller (or callee) polls call state to retrieve offer/answer.
+// Callee fallback: discover latest pending incoming call by deviceId.
+// GET /api/calls/pending-by-device/:deviceId
+app.get('/api/calls/pending-by-device/:deviceId', (req, res) => {
+  const {deviceId} = req.params;
+  if (!deviceId) {
+    return res.status(400).json({error: 'deviceId is required'});
+  }
+
+  const entries = Array.from(calls.entries()).reverse();
+  const pending = entries.find(([_, call]) => {
+    return (
+      call &&
+      call.toDeviceId === deviceId &&
+      !!call.offer?.sdp &&
+      !call.answer?.sdp
+    );
+  });
+
+  if (!pending) {
+    return res.status(404).json({error: 'No pending incoming call for device'});
+  }
+
+  const [callId, call] = pending;
+  console.log('[CALLDEBUG] pending-call-by-device', {
+    deviceId,
+    callId,
+    hasOffer: !!call.offer?.sdp,
+    hasAnswer: !!call.answer?.sdp,
+  });
+
+  res.json({
+    ok: true,
+    callId,
+    fromDeviceId: call.fromDeviceId || null,
+    toDeviceId: call.toDeviceId || null,
+    fromLoyaltyId: call.fromLoyaltyId || null,
+    toLoyaltyId: call.toLoyaltyId || null,
+    callerName: call.callerName || null,
+  });
+});
+
+// Callee fallback by loyaltyId (when deviceId/session is not ready yet on locked wake).
+// GET /api/calls/pending-by-loyalty/:loyaltyId
+app.get('/api/calls/pending-by-loyalty/:loyaltyId', (req, res) => {
+  const {loyaltyId} = req.params;
+  if (!loyaltyId) {
+    return res.status(400).json({error: 'loyaltyId is required'});
+  }
+
+  const entries = Array.from(calls.entries()).reverse();
+  const pending = entries.find(([_, call]) => {
+    return (
+      call &&
+      String(call.toLoyaltyId || '') === String(loyaltyId) &&
+      !!call.offer?.sdp &&
+      !call.answer?.sdp
+    );
+  });
+
+  if (!pending) {
+    return res.status(404).json({error: 'No pending incoming call for loyaltyId'});
+  }
+
+  const [callId, call] = pending;
+  console.log('[CALLDEBUG] pending-call-by-loyalty', {
+    loyaltyId,
+    callId,
+    hasOffer: !!call.offer?.sdp,
+    hasAnswer: !!call.answer?.sdp,
+  });
+
+  res.json({
+    ok: true,
+    callId,
+    fromDeviceId: call.fromDeviceId || null,
+    toDeviceId: call.toDeviceId || null,
+    fromLoyaltyId: call.fromLoyaltyId || null,
+    toLoyaltyId: call.toLoyaltyId || null,
+    callerName: call.callerName || null,
+  });
+});
+
+// Caller (or callee) polls call state to retrieve offer/answer.
 // GET /api/calls/:callId
 app.get('/api/calls/:callId', (req, res) => {
   const {callId} = req.params;
@@ -1059,6 +1378,13 @@ app.get('/api/calls/:callId', (req, res) => {
     callerName: call.callerName || null,
     offer: call.offer,
     answer: call.answer,
+  });
+  console.log('[CALLDEBUG] call-state-read', {
+    callId,
+    hasOffer: !!call.offer?.sdp,
+    hasAnswer: !!call.answer?.sdp,
+    fromDeviceId: call.fromDeviceId || null,
+    toDeviceId: call.toDeviceId || null,
   });
 });
 
@@ -1083,6 +1409,12 @@ app.post('/api/calls/:callId/candidate', (req, res) => {
   }
   existing[from].push(candidate);
   callCandidates.set(callId, existing);
+  console.log('[CALLDEBUG] candidate-received', {
+    callId,
+    from,
+    callerCandidates: existing.caller?.length || 0,
+    calleeCandidates: existing.callee?.length || 0,
+  });
 
   console.log('[candidate] callId=', callId, 'from=', from);
   
@@ -1243,11 +1575,13 @@ io.on('connection', socket => {
             device.socketId = socket.id;
             device.loyaltyId = user.loyalty_id;
           } else {
+            const inferredPlatform = inferPlatformFromPushToken(user.voipToken || null);
             devices.set(deviceId, {
               userId: user.id,
               loyaltyId: user.loyalty_id,
               voipToken: user.voipToken || null,
-              platform: 'web',
+              // Keep mobile platform if token exists; don't force web.
+              platform: inferredPlatform || 'web',
               socketId: socket.id,
             });
           }
