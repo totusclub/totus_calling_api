@@ -106,7 +106,7 @@ const providerOpts = {
     keyId: '2X2QV7S43J',
     teamId: 'C6258722D6',
   },
-  production: true, // false = sandbox / development
+  production: false, // false = sandbox / development
 };
 
 const apnProvider = new apn.Provider(providerOpts);
