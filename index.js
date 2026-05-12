@@ -16,6 +16,7 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const {v4: uuidv4} = require('uuid');
 const apn = require('apn');
+const admin = require('firebase-admin');
 const http = require('http');
 const {Server} = require('socket.io');
 const {userDb, contactDb, favoriteDb} = require('./db');
@@ -112,6 +113,46 @@ const apnProvider = new apn.Provider(providerOpts);
 // This must match the VoIP topic configured for your app in Apple Developer portal.
 // Often: "<bundle-id>.voip" or just your bundle id if configured that way.
 const APN_VOIP_TOPIC = process.env.APN_VOIP_TOPIC || 'app.totus.club.voip';
+
+let firebaseApp = null;
+try {
+  const firebaseServiceAccount = require(path.join(
+    __dirname,
+    'totusapp-2ab2b-firebase-adminsdk-fbsvc-c36c3f7233.json',
+  ));
+  firebaseApp = admin.initializeApp({
+    credential: admin.credential.cert(firebaseServiceAccount),
+  });
+  console.log('[fcm] Firebase Admin initialized');
+} catch (e) {
+  console.error('[fcm] Firebase Admin init failed:', e.message);
+}
+
+function toFcmDataValue(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  return String(value);
+}
+
+function detectPhonePlatformFromToken(token) {
+  const raw = String(token || '').trim();
+  if (!raw) {
+    return null;
+  }
+
+  // APNs VoIP tokens are hex strings (typically 64+ chars, no ':').
+  const isLikelyApnsToken = /^[a-fA-F0-9]{40,}$/.test(raw) && !raw.includes(':');
+  if (isLikelyApnsToken) {
+    return 'ios';
+  }
+
+  // FCM tokens typically contain ':' and mixed URL-safe chars.
+  return 'android';
+}
 
 // ======================
 // Authentication (Login)
@@ -707,10 +748,13 @@ app.post('/api/calls', async (req, res) => {
         return res.status(404).json({error: 'Target user not found'});
       }
       
-      // Determine platform: web if has socketId, iOS if has voipToken
-      // Allow calling offline users if they have voipToken (VoIP push works even when offline)
-      const isWeb = !!user.socketId;
+      // Prefer phone push when token exists (mobile can still have stale socketId).
+      // Web is only true when there is no phone token.
       const isPhone = !!user.voipToken;
+      const inferredPhonePlatform = isPhone
+        ? detectPhonePlatformFromToken(user.voipToken)
+        : null;
+      const isWeb = !!user.socketId && !isPhone;
       
       if (!isWeb && !isPhone) {
         return res.status(404).json({error: 'Target user not registered for calls (no socketId or voipToken)'});
@@ -720,7 +764,7 @@ app.post('/api/calls', async (req, res) => {
         userId: user.id,
         loyaltyId: user.loyalty_id,
         voipToken: user.voipToken || null,
-        platform: isWeb ? 'web' : 'ios',
+        platform: isWeb ? 'web' : (inferredPhonePlatform || 'android'),
         socketId: user.socketId || null,
       };
       targetDeviceId = isWeb ? user.socketId : (user.voipToken || targetDeviceId);
@@ -816,7 +860,8 @@ app.post('/api/calls', async (req, res) => {
   // Allow calling offline users if they have voipToken (VoIP push works even when offline)
   const calleeSocketId = callee.socketId || deviceSockets.get(targetDeviceId);
   const isCalleeWeb = callee.platform === 'web' || !!calleeSocketId;
-  const isCalleePhone = (callee.platform === 'ios' && !!callee.voipToken) || (!!callee.voipToken && !callee.socketId);
+  const isCalleeIOSPhone = callee.platform === 'ios' && !!callee.voipToken;
+  const isCalleeAndroidPhone = callee.platform === 'android' && !!callee.voipToken;
 
   // For web clients: send offer via socket
   if (isCalleeWeb && calleeSocketId) {
@@ -843,8 +888,8 @@ app.post('/api/calls', async (req, res) => {
     });
   }
 
-  // For phone clients: send VoIP push notification
-  if (isCalleePhone) {
+  // For iOS phone clients: send VoIP push notification
+  if (isCalleeIOSPhone) {
     try {
       const note = new apn.Notification();
 
@@ -913,13 +958,62 @@ app.post('/api/calls', async (req, res) => {
       });
       res.status(500).json({error: 'APNs send failed: ' + err.message});
     }
+  } else if (isCalleeAndroidPhone) {
+    // Android incoming-call wake-up via FCM data-only push (killed/background safe).
+    try {
+      if (!firebaseApp) {
+        throw new Error('Firebase Admin is not initialized');
+      }
+      const message = {
+        token: callee.voipToken,
+        data: {
+          type: 'incoming_call',
+          callId: toFcmDataValue(callId),
+          uuid: toFcmDataValue(callId),
+          handle: toFcmDataValue(fromDeviceId || targetDeviceId || 'caller'),
+          callerName: toFcmDataValue(finalCallerName || 'Incoming call'),
+          caller_name: toFcmDataValue(finalCallerName || 'Incoming call'),
+          fromDevice: toFcmDataValue(fromDeviceId || 'caller'),
+          fromDeviceId: toFcmDataValue(fromDeviceId || ''),
+          fromLoyaltyId: toFcmDataValue(callerLoyaltyId || ''),
+          toLoyaltyId: toFcmDataValue(callee.loyaltyId || targetLoyaltyId || ''),
+          offerType: toFcmDataValue(offer?.type || 'offer'),
+          offerSdp: toFcmDataValue(offer?.sdp || ''),
+        },
+        android: {
+          priority: 'high',
+          ttl: 30000,
+          directBootOk: true,
+        },
+      };
+      console.log('[fcm] android voip payload audit', {
+        callId,
+        dataOnly: !message.notification,
+        hasData: !!message.data,
+        dataType: message.data?.type || null,
+        priority: message.android?.priority || null,
+        ttl: message.android?.ttl || null,
+        directBootOk: !!message.android?.directBootOk,
+      });
+
+      const messageId = await admin.messaging().send(message);
+      console.log('[fcm] incoming call push sent:', {
+        callId,
+        messageId,
+        toDeviceId: targetDeviceId,
+        toLoyaltyId: callee.loyaltyId || targetLoyaltyId || null,
+      });
+      res.json({ok: true, callId, platform: 'android', fcmMessageId: messageId});
+    } catch (err) {
+      console.error('[fcm] send error', err);
+      res.status(500).json({error: 'FCM send failed: ' + err.message});
+    }
   } else if (isCalleeWeb) {
     // Web client - already sent via socket above
     res.json({ok: true, callId, platform: 'web'});
   } else {
-    // TODO: Android – send FCM data message here
-    console.log('[create-call] Android push not implemented, deviceId=', targetDeviceId);
-    res.json({ok: true, callId, note: 'Android push not implemented yet'});
+    console.log('[create-call] No push channel available, deviceId=', targetDeviceId, 'platform=', callee.platform);
+    res.json({ok: true, callId, note: 'No push channel available'});
   }
   
   // Also notify caller (if we know its device and socket)
@@ -1845,7 +1939,7 @@ app.post('/api/tour-assistant', async (req, res) => {
 const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
 Ты профессиональный туристический ассистент. Помогай пользователям найти идеальное путешествие, собирая ВСЕ необходимые данные перед запуском поиска.
 
-🎯 КРИТИЧЕСКИ ВАЖНО:
+КРИТИЧЕСКИ ВАЖНО:
 - НИКОГДА не запускай поиск, пока НЕ собраны ВСЕ обязательные поля
 - Задавай вопросы последовательно, по одному за раз
 - Если пользователь не ответил - задай вопрос снова, НЕ переходи к следующему
@@ -1954,7 +2048,7 @@ const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
 - filter_price_min (минимальная цена, по умолчанию 0 если не указано)
 - filter_stars, filter_meals, filter_beach_surface, filter_line и другие фильтры (все опциональны)
 
-🎯 АВТОМАТИЧЕСКОЕ ИЗВЛЕЧЕНИЕ ОПЦИОНАЛЬНЫХ ФИЛЬТРОВ:
+ АВТОМАТИЧЕСКОЕ ИЗВЛЕЧЕНИЕ ОПЦИОНАЛЬНЫХ ФИЛЬТРОВ:
 ВАЖНО: НЕ задавай вопросы про опциональные фильтры! Просто извлекай их из сообщений пользователя, если он их упоминает.
 Если пользователь говорит "любой", "не важно", "без разницы" про какой-то фильтр - игнорируй его.
 
