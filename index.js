@@ -3210,6 +3210,10 @@ app.post('/api/tour-assistant/stream', async (req, res) => {
 // Note: Final search is now handled directly in the frontend using runFullSearchFlow
 // This endpoint is no longer needed
 
+// Tour Assistant V2 (isolated — does not change legacy /api/tour-assistant routes)
+const { mountTourAssistantV2Routes } = require('./tour-assistant/v2/routes');
+mountTourAssistantV2Routes(app);
+
 // ======================
 // Server start
 // ======================
