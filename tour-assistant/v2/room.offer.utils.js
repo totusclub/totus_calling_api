@@ -1,0 +1,81 @@
+const MEAL_LABELS = {
+  BB: 'Завтрак',
+  RO: 'Без питания',
+  AI: 'Всё включено',
+  UAI: 'Ультра всё включено',
+  HB: 'Завтрак и ужин',
+  FB: 'Завтрак, обед, ужин',
+  HBD: 'Завтрак и ужин',
+  AI24: 'Всё включено 24 часа',
+  DNR: 'Ужин',
+  AIL: 'Всё включено с ограничениями',
+  'FB+': 'Завтрак, обед, ужин +',
+  'HB+': 'Завтрак и ужин +',
+  HBL: 'Завтрак и обед',
+};
+
+function normalizeDate(value) {
+  if (!value || typeof value !== 'string') return null;
+  return value.trim().slice(0, 10);
+}
+
+function getMealLabel(mealId, mealTypes = []) {
+  const found = mealTypes.find((m) => m.id === mealId);
+  return found?.description || MEAL_LABELS[mealId] || mealId;
+}
+
+/**
+ * Find cheapest room offer from hotels-rooms response.
+ */
+function findCheapestRoomOffer(roomsData, { startDate, nights } = {}) {
+  const rooms = roomsData?.result || roomsData || [];
+  if (!Array.isArray(rooms) || !rooms.length) return null;
+
+  const targetDate = normalizeDate(startDate);
+  const targetNights = nights ? Number(nights) : null;
+
+  let best = null;
+  let fallback = null;
+
+  for (const room of rooms) {
+    const roomType = room.room?.name_ru || room.room?.name_en || '';
+    const offersMap = room.offers || {};
+
+    for (const [mealId, offers] of Object.entries(offersMap)) {
+      if (!Array.isArray(offers)) continue;
+      const mealType = getMealLabel(mealId, room.meal_types);
+
+      for (const offer of offers) {
+        if (!offer?.price) continue;
+        const candidate = {
+          room_type: roomType,
+          meal_type: mealType,
+          price: Number(offer.price),
+          nights_count: offer.nights_count,
+          start_date: offer.start_date,
+        };
+
+        if (!fallback || candidate.price < fallback.price) {
+          fallback = candidate;
+        }
+
+        const dateOk = !targetDate || normalizeDate(offer.start_date) === targetDate;
+        const nightsOk = !targetNights || Number(offer.nights_count) === targetNights;
+
+        if (dateOk && nightsOk) {
+          if (!best || candidate.price < best.price) {
+            best = candidate;
+          }
+        }
+      }
+    }
+  }
+
+  return best || fallback;
+}
+
+module.exports = {
+  MEAL_LABELS,
+  findCheapestRoomOffer,
+  getMealLabel,
+};

@@ -1,0 +1,34 @@
+{
+  "id": "96bbc700-4776-419a-9eb4-913d7b3bc646",
+  "userId": null,
+  "title": "Новый чат",
+  "createdAt": "2026-05-15T15:48:04.130Z",
+  "updatedAt": "2026-05-15T15:48:04.133Z",
+  "messages": [],
+  "searchParams": {
+    "from_city": "",
+    "from_country": "RU",
+    "to_country": "",
+    "to_city": "",
+    "adults": "1",
+    "kids": "0",
+    "kids_ages": [],
+    "start_date": "",
+    "nights": 1,
+    "search_type": "package",
+    "flex_dates": 2,
+    "hotel_ids": [],
+    "page_number": 1,
+    "page_limit": 3,
+    "sort_by": "relevance"
+  },
+  "searchSession": {
+    "requestId": null,
+    "readyOperators": [],
+    "currentPage": 0
+  },
+  "stage": "collecting_params",
+  "results": {
+    "hotels": []
+  }
+}
