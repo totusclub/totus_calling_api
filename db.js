@@ -6,10 +6,10 @@ const mysql = require('mysql2/promise');
 
 // Database configuration from environment variables or defaults
 const dbConfig = {
-    host:  '213.109.202.180',
+    host:  '109.73.206.121',
     port:  3306,
-    user: 'root',
-    password: 'your_secure_password',
+    user: 'admin',
+    password: 'f?pJY8AUv+KKf5',
     database: 'kedam',
     waitForConnections: true,
     connectionLimit: 10,
