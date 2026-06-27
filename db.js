@@ -8,7 +8,7 @@ const mysql = require('mysql2/promise');
 const dbConfig = {
     host:  '109.73.206.121',
     port:  3306,
-    user: 'admin',
+    user: 'totus',
     password: 'f?pJY8AUv+KKf5',
     database: 'kedam',
     waitForConnections: true,
