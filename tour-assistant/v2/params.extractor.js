@@ -1,5 +1,4 @@
 const {
-  hasDestination,
   inferSearchIntentFromParams,
   isPostSearchAdvisoryText,
   isReady,
@@ -23,7 +22,38 @@ const MONTH_MAP = {
   декабря: '12',
 };
 
-const COUNTRY_ALIASES = {
+/** City/resort names — set both to_country and to_city. */
+const CITY_DESTINATION_ALIASES = {
+  'abu dhabi': { country: 'AE', city: 'Abu Dhabi' },
+  'абу-даби': { country: 'AE', city: 'Abu Dhabi' },
+  'абу даби': { country: 'AE', city: 'Abu Dhabi' },
+  dubai: { country: 'AE', city: 'Dubai' },
+  дубай: { country: 'AE', city: 'Dubai' },
+  istanbul: { country: 'TR', city: 'Istanbul' },
+  стамбул: { country: 'TR', city: 'Istanbul' },
+  antalya: { country: 'TR', city: 'Antalya' },
+  antalia: { country: 'TR', city: 'Antalya' },
+  анталья: { country: 'TR', city: 'Antalya' },
+  анталиа: { country: 'TR', city: 'Antalya' },
+  анталия: { country: 'TR', city: 'Antalya' },
+  paris: { country: 'FR', city: 'Paris' },
+  париж: { country: 'FR', city: 'Paris' },
+  bali: { country: 'ID', city: 'Bali' },
+  бали: { country: 'ID', city: 'Bali' },
+  hurghada: { country: 'EG', city: 'Hurghada' },
+  хургада: { country: 'EG', city: 'Hurghada' },
+  phuket: { country: 'TH', city: 'Phuket' },
+  пхукет: { country: 'TH', city: 'Phuket' },
+  bangkok: { country: 'TH', city: 'Bangkok' },
+  бангкок: { country: 'TH', city: 'Bangkok' },
+  barcelona: { country: 'ES', city: 'Barcelona' },
+  барселона: { country: 'ES', city: 'Barcelona' },
+  rome: { country: 'IT', city: 'Rome' },
+  рим: { country: 'IT', city: 'Rome' },
+};
+
+/** Country-only — set to_country, leave to_city empty for country-wide search. */
+const COUNTRY_ONLY_ALIASES = {
   турция: 'TR',
   turkey: 'TR',
   египет: 'EG',
@@ -37,10 +67,6 @@ const COUNTRY_ALIASES = {
   кипр: 'CY',
   cyprus: 'CY',
   оаэ: 'AE',
-  дубай: 'AE',
-  dubai: 'AE',
-  'абу-даби': 'AE',
-  'abu dhabi': 'AE',
   марокко: 'MA',
   morocco: 'MA',
   тунис: 'TN',
@@ -49,22 +75,60 @@ const COUNTRY_ALIASES = {
   vietnam: 'VN',
   мальдивы: 'MV',
   maldives: 'MV',
-  бали: 'ID',
-  bali: 'ID',
   италия: 'IT',
   italy: 'IT',
   франция: 'FR',
   france: 'FR',
-  париж: 'FR',
-  paris: 'FR',
-  стамбул: 'TR',
-  istanbul: 'TR',
-  анталья: 'TR',
-  antalya: 'TR',
-  анталиа: 'TR',
-  antalia: 'TR',
-  анталия: 'TR',
 };
+
+const SORTED_CITY_ENTRIES = Object.entries(CITY_DESTINATION_ALIASES).sort(
+  (a, b) => b[0].length - a[0].length,
+);
+const SORTED_COUNTRY_ENTRIES = Object.entries(COUNTRY_ONLY_ALIASES).sort(
+  (a, b) => b[0].length - a[0].length,
+);
+
+function textMentionsAlias(text, alias) {
+  const t = (text || '').toLowerCase();
+  const a = (alias || '').toLowerCase();
+  if (!a) return false;
+  if (t.includes(a)) return true;
+  // Russian cases: «турцию» / «в Египет» still match «турция» / «египет»
+  if (a.length >= 4) {
+    const stem = a.slice(0, -1);
+    if (stem.length >= 3 && t.includes(stem)) return true;
+  }
+  return false;
+}
+
+function matchCityDestination(text) {
+  for (const [name, dest] of SORTED_CITY_ENTRIES) {
+    if (textMentionsAlias(text, name)) return dest;
+  }
+  return null;
+}
+
+function matchCountryOnly(text) {
+  for (const [name, code] of SORTED_COUNTRY_ENTRIES) {
+    if (textMentionsAlias(text, name)) return code;
+  }
+  return null;
+}
+
+function applyDestinationFromText(text, patch) {
+  const cityDest = matchCityDestination(text);
+  if (cityDest) {
+    patch.to_country = cityDest.country;
+    patch.to_city = cityDest.city;
+    return true;
+  }
+  const countryCode = matchCountryOnly(text);
+  if (countryCode) {
+    patch.to_country = countryCode;
+    return true;
+  }
+  return false;
+}
 
 const { extractHotelNameFromText } = require('./hotel.resolver');
 
@@ -84,9 +148,12 @@ function normalizeSearchParams(params = {}) {
 
 function mapMealPreference(text) {
   const t = (text || '').toLowerCase();
+  const trimmed = (text || '').trim();
+  if (/^(uai)$/i.test(trimmed)) return 'UAI';
+  if (/ультра|ultra|\buai\b/i.test(t)) return 'UAI';
   if (
-    /вс[ёе]\s*включ|all\s*inclusive|\bai\b|uai|ультра|ultra/i.test(t) ||
-    /^(ai|uai)$/i.test((text || '').trim())
+    /вс[ёе]\s*включ|all\s*inclusive|\bai\b/i.test(t) ||
+    /^(ai)$/i.test(trimmed)
   ) {
     return 'AI';
   }
@@ -334,50 +401,33 @@ function extractFromUserText(text, existing = {}, nextField = null) {
     patch.start_date = `${dotDate[3]}-${dotDate[2].padStart(2, '0')}-${dotDate[1].padStart(2, '0')}`;
   }
 
-  for (const [name, code] of Object.entries(COUNTRY_ALIASES)) {
-    if (t.includes(name)) {
-      patch.to_country = code;
-      if (!existing.to_city) {
-        const cityLabel =
-          name === 'анталиа' || name === 'antalia' || name === 'анталья' || name === 'antalya'
-            ? 'Antalya'
-            : name === 'дубай' || name === 'dubai'
-              ? 'Dubai'
-              : name.charAt(0).toUpperCase() + name.slice(1);
-        patch.to_city = cityLabel;
-      }
-      if (!existing.search_intent && !patch.search_intent) {
-        patch.search_intent = 'package';
-        patch.search_type = 'package';
-      }
-      break;
+  if (applyDestinationFromText(text, patch)) {
+    if (!existing.search_intent && !patch.search_intent) {
+      patch.search_intent = 'package';
+      patch.search_type = 'package';
     }
   }
 
   const toCityMatch = t.match(/(?:поехать|лететь|полет|fly|go|хочу)\s+(?:в|vo|to)\s+([а-яёa-z\-\s]{3,30})/i);
-  if (toCityMatch && !patch.to_city && !patch.hotel_name) {
+  if (toCityMatch && !patch.to_country && !patch.to_city && !patch.hotel_name) {
     const rawCity = toCityMatch[1].trim().replace(/[.!?]+$/, '');
-    const cityKey = rawCity.toLowerCase();
-    let matched = false;
-    for (const [name, code] of Object.entries(COUNTRY_ALIASES)) {
-      if (cityKey.includes(name) || name.includes(cityKey)) {
-        patch.to_country = code;
-        patch.to_city =
-          name === 'анталиа' || name === 'antalia' || name === 'анталья' || name === 'antalya'
-            ? 'Antalya'
-            : name === 'дубай' || name === 'dubai'
-              ? 'Dubai'
-              : rawCity.charAt(0).toUpperCase() + rawCity.slice(1);
-        matched = true;
-        break;
-      }
-    }
-    if (!matched) {
+    if (!applyDestinationFromText(rawCity, patch)) {
       patch.to_city = rawCity.charAt(0).toUpperCase() + rawCity.slice(1);
     }
     if (!existing.search_intent && !patch.search_intent) {
       patch.search_intent = 'package';
       patch.search_type = 'package';
+    }
+  }
+
+  const cityExplicitMatch = t.match(/(?:город|курорт|resort|city)\s+([а-яёa-z\-\s]{2,30})/i);
+  if (cityExplicitMatch && !patch.hotel_name) {
+    const rawCity = cityExplicitMatch[1].trim().replace(/[.!?]+$/, '');
+    if (applyDestinationFromText(rawCity, patch)) {
+      if (!existing.search_intent && !patch.search_intent) {
+        patch.search_intent = 'package';
+        patch.search_type = 'package';
+      }
     }
   }
 
@@ -399,8 +449,9 @@ function extractFromUserText(text, existing = {}, nextField = null) {
   }
 
   if (nextField === 'destination' && trimmed.length >= 2 && !patch.to_country && !patch.hotel_name) {
-    const cityLabel = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-    patch.to_city = cityLabel;
+    if (!applyDestinationFromText(trimmed, patch)) {
+      patch.to_city = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+    }
   }
 
   const fromMatch = t.match(/(?:^|[^\wа-яё])(?:из|откуда|вылет\s*из)\s+([а-яёa-z\-\s]{3,30})/i);
@@ -438,20 +489,9 @@ function extractFromUserText(text, existing = {}, nextField = null) {
     else if (fromRaw.includes('петербург') || fromRaw.includes('спб')) patch.from_city = 'Saint Petersburg';
     else patch.from_city = fromRaw.charAt(0).toUpperCase() + fromRaw.slice(1);
     if (!patch.to_city) {
-      const toKey = toRaw.toLowerCase();
-      let matched = false;
-      for (const [name, code] of Object.entries(COUNTRY_ALIASES)) {
-        if (toKey.includes(name) || name.includes(toKey)) {
-          patch.to_country = code;
-          patch.to_city =
-            name === 'анталиа' || name === 'antalia' || name === 'анталья' || name === 'antalya'
-              ? 'Antalya'
-              : toRaw.charAt(0).toUpperCase() + toRaw.slice(1);
-          matched = true;
-          break;
-        }
+      if (!applyDestinationFromText(toRaw, patch)) {
+        patch.to_city = toRaw.charAt(0).toUpperCase() + toRaw.slice(1);
       }
-      if (!matched) patch.to_city = toRaw.charAt(0).toUpperCase() + toRaw.slice(1);
     }
     patch.search_intent = 'package';
     patch.search_type = 'package';
@@ -494,8 +534,9 @@ function applyExtraction(conversation, userText, aiResponse, nextField = null) {
   if (params.hotel_name && !params.hotel_ids?.length && intent === 'hotel') {
     params.search_type = 'hotel';
   }
-  if (!hasDestination(params) && params.to_country) {
-    params.to_city = params.to_city || params.to_country;
+  const { isCountryPlaceholderToCity } = require('./search.params.normalizer');
+  if (params.to_city && isCountryPlaceholderToCity(params.to_city, params.to_country)) {
+    delete params.to_city;
   }
   conversation.searchParams = params;
   return params;

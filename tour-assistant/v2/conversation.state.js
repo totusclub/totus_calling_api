@@ -297,6 +297,8 @@ const SEARCH_FILTER_KEYS = [
 ];
 
 function searchFiltersChanged(justReceived = {}) {
+  if (justReceived.to_city !== undefined && justReceived.to_city !== '') return true;
+  if (justReceived.to_country !== undefined && justReceived.to_country !== '') return true;
   return SEARCH_FILTER_KEYS.some(
     (k) => justReceived[k] !== undefined && justReceived[k] !== '',
   );

@@ -51,6 +51,36 @@ const TO_CITY_ALIASES = {
   barcelona: 'Barcelona',
 };
 
+const COUNTRY_PLACEHOLDER_NAMES = {
+  TR: ['турция', 'turkey', 'tr', 'турцию', 'турции', 'турцией'],
+  EG: ['египет', 'egypt', 'eg', 'египта', 'египту'],
+  TH: ['таиланд', 'thailand', 'th', 'таиланда', 'таиланду'],
+  GR: ['греция', 'greece', 'gr', 'греции', 'грецию'],
+  ES: ['испания', 'spain', 'es', 'испании', 'испанию'],
+  CY: ['кипр', 'cyprus', 'cy', 'кипра', 'кипру'],
+  AE: ['оаэ', 'ae', 'эмираты', 'эмиратов'],
+  MA: ['марокко', 'morocco', 'ma'],
+  TN: ['тунис', 'tunisia', 'tn', 'туниса', 'тунису'],
+  VN: ['вьетнам', 'vietnam', 'vn', 'вьетнама', 'вьетнаму'],
+  MV: ['мальдивы', 'maldives', 'mv', 'мальдив'],
+  ID: ['индонезия', 'indonesia', 'id'],
+  IT: ['италия', 'italy', 'it', 'италии', 'италию'],
+  FR: ['франция', 'france', 'fr', 'франции', 'францию'],
+};
+
+function isCountryPlaceholderToCity(toCity, toCountry) {
+  if (!toCity || typeof toCity !== 'string') return false;
+  const key = toCity.trim().toLowerCase();
+  if (!key) return false;
+  if (toCountry && key === String(toCountry).toLowerCase()) return true;
+  const placeholders = COUNTRY_PLACEHOLDER_NAMES[toCountry] || [];
+  if (placeholders.includes(key)) return true;
+  for (const names of Object.values(COUNTRY_PLACEHOLDER_NAMES)) {
+    if (names.includes(key)) return true;
+  }
+  return false;
+}
+
 function formatDateYmd(date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -107,7 +137,11 @@ function normalizeSearchParamsForApi(params = {}) {
     p.from_city = normalizeFromCity(p.from_city);
   }
   if (p.to_city) {
-    p.to_city = normalizeToCity(p.to_city, p.to_country);
+    if (isCountryPlaceholderToCity(p.to_city, p.to_country)) {
+      delete p.to_city;
+    } else {
+      p.to_city = normalizeToCity(p.to_city, p.to_country);
+    }
   }
   if (p.start_date) {
     p.start_date = normalizeStartDate(p.start_date);
@@ -130,4 +164,5 @@ module.exports = {
   normalizeToCity,
   normalizeStartDate,
   normalizeSearchParamsForApi,
+  isCountryPlaceholderToCity,
 };
