@@ -18,7 +18,7 @@ const {
   summarizeKnownParams,
 } = require('./conversation.state');
 const { formatDestinationPoPhrase, formatDestinationSummary, formatDestinationInPhrase } = require('./destination.labels');
-const { extractDestinationQuery, resolveDestinationByText } = require('./destination.resolver');
+const { extractDestinationQuery, extractExplicitCityName, resolveDestinationByText } = require('./destination.resolver');
 const { applyExtraction, mergeSearchParams } = require('./params.extractor');
 const { extractParamsWithAi } = require('./ai.param-extractor');
 const { resolveHotelByName } = require('./hotel.resolver');
@@ -47,7 +47,7 @@ async function enrichDestinationFromApi(
   const query =
     nextFieldBefore === 'destination'
       ? String(userText || '').trim()
-      : extractDestinationQuery(userText);
+      : extractDestinationQuery(userText) || extractExplicitCityName(userText);
 
   if (!query || query.length < 2) return;
 
@@ -372,6 +372,13 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
         currentPage: 0,
       };
       conversation.shownHotelIds = [];
+      if (justReceived.to_country || justReceived.to_city) {
+        if (!justReceived.filter_price_max) {
+          delete conversation.searchParams.filter_price_max;
+        }
+        conversation.searchParams.destination_label = '';
+        conversation.searchParams.destination_label_prep = '';
+      }
       if (justReceived.filter_stars) {
         conversation.searchParams.filter_stars = justReceived.filter_stars;
       }

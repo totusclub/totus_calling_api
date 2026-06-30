@@ -13,15 +13,36 @@ const MONTH_LIKE =
 /**
  * Pull a destination phrase from free-form user text for autocomplete lookup.
  */
+function extractExplicitCityName(userText) {
+  const raw = String(userText || '').trim();
+  if (!raw) return '';
+
+  const patterns = [
+    /(?:в\s+)?город[еу]?\s+([а-яёa-z\-]+)/i,
+    /(?:курорт[еу]?|resort)\s+([а-яёa-z\-]+)/i,
+  ];
+
+  for (const re of patterns) {
+    const match = raw.match(re);
+    if (!match?.[1]) continue;
+    const city = match[1].trim().replace(/[,.!?]+$/, '');
+    if (city.length >= 2 && !MONTH_LIKE.test(city)) return city;
+  }
+  return '';
+}
+
 function extractDestinationQuery(userText) {
   const raw = (userText || '').trim();
   if (!raw) return '';
   const t = raw.toLowerCase();
 
+  const explicitCity = extractExplicitCityName(raw);
+  if (explicitCity) return explicitCity;
+
   const patterns = [
     /(?:подобрать|собер\w*|найд\w*|ищ\w*|хот\w*|поехать|полететь|отдохнуть|слетать)\s+(?:\S+\s+){0,4}(?:тур|поездк\w*|отдых)?\s*(?:в|vo|to|на)\s+([а-яёa-z\-\s]{2,40})/i,
     /(?:тур|поездк\w*)\s+(?:в|vo|to|на)\s+([а-яёa-z\-\s]{2,40})/i,
-    /(?:город|курорт|resort|city)\s+([а-яёa-z\-\s]{2,40})/i,
+    /(?:город[еу]?|курорт[еу]?|resort|city)\s+([а-яёa-z\-\s]{2,40})/i,
     /\b(?:в|vo|to|на)\s+([а-яёa-z\-\s]{2,40}?)(?:[?.!,]|$|\s+(?:на|с|и|или|без))/i,
   ];
 
@@ -166,6 +187,7 @@ async function resolveDestinationByText(query, fromCity = 'Moscow') {
 }
 
 module.exports = {
+  extractExplicitCityName,
   extractDestinationQuery,
   resolveDestinationByText,
 };

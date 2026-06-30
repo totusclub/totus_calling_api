@@ -33,6 +33,8 @@ const TO_CITY_ALIASES = {
   istanbul: 'Istanbul',
   хургада: 'Hurghada',
   hurghada: 'Hurghada',
+  белек: 'Belek',
+  belek: 'Belek',
   sharm: 'Sharm El Sheikh',
   'шарм': 'Sharm El Sheikh',
   'шarm el sheikh': 'Sharm El Sheikh',

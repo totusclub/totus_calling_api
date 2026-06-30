@@ -48,6 +48,7 @@ const COUNTRY_LABELS = {
 
 const CITY_LABELS = {
   Antalya: { nom: 'Анталья', prep: 'Анталье' },
+  Belek: { nom: 'Белек', prep: 'Белеке' },
   Istanbul: { nom: 'Стамбул', prep: 'Стамбуле' },
   Dubai: { nom: 'Дубай', prep: 'Дубае' },
   'Abu Dhabi': { nom: 'Абу-Даби', prep: 'Абу-Даби' },

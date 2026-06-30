@@ -36,6 +36,8 @@ const CITY_DESTINATION_ALIASES = {
   анталья: { country: 'TR', city: 'Antalya' },
   анталиа: { country: 'TR', city: 'Antalya' },
   анталия: { country: 'TR', city: 'Antalya' },
+  belek: { country: 'TR', city: 'Belek' },
+  белек: { country: 'TR', city: 'Belek' },
   paris: { country: 'FR', city: 'Paris' },
   париж: { country: 'FR', city: 'Paris' },
   bali: { country: 'ID', city: 'Bali' },
@@ -257,8 +259,9 @@ function mapRatingFilter(text) {
   if (!hasRatingContext) return null;
 
   const patterns = [
-    /рейтинг(?:ом)?\s*(?:от|выше|не\s*ниже|>=?)?\s*(\d+(?:[.,]\d+)?)/,
-    /(?:с\s+)?рейтинг(?:ом)?\s*(\d+(?:[.,]\d+)?)/,
+    /рейтинг(?:ом|ов|а|е)?\s*(?:выше|больше|от|не\s*ниже|>=?)?\s*(\d+(?:[.,]\d+)?)/,
+    /(?:с\s+)?рейтинг(?:ом|ов|а|е)?\s*(?:выше|больше|от)?\s*(\d+(?:[.,]\d+)?)/,
+    /(?:выше|больше)\s*(\d+(?:[.,]\d+)?)(?:\s*(?:по\s+)?рейтинг)?/,
     /(\d+(?:[.,]\d+)?)\s*\+?\s*(?:рейтинг|rating)/,
     /\brating\s*(?:at\s*least|from|of)?\s*(\d+(?:[.,]\d+)?)/i,
     /rating\s*(?:>=?|above)\s*(\d+(?:[.,]\d+)?)/i,
@@ -564,9 +567,13 @@ function extractFromUserText(text, existing = {}, nextField = null) {
     }
   }
 
-  const cityExplicitMatch = t.match(/(?:город|курорт|resort|city)\s+([а-яёa-z\-\s]{2,30})/i);
+  const cityExplicitMatch = t.match(/(?:город[еу]?|курорт[еу]?|resort|city)\s+([а-яёa-z\-\s]{2,30})/i);
   if (cityExplicitMatch && !patch.hotel_name) {
-    const rawCity = cityExplicitMatch[1].trim().replace(/[.!?]+$/, '');
+    const rawCity = cityExplicitMatch[1]
+      .trim()
+      .replace(/[.!?]+$/, '')
+      .split(/[,]/)[0]
+      .trim();
     if (applyDestinationFromText(rawCity, patch)) {
       if (!existing.search_intent && !patch.search_intent) {
         patch.search_intent = 'package';
@@ -645,6 +652,50 @@ function extractFromUserText(text, existing = {}, nextField = null) {
   return patch;
 }
 
+function reconcileDestinationAfterExtraction(params, existing, userText, localPatch, aiPatch) {
+  const { extractExplicitCityName } = require('./destination.resolver');
+  const explicitCity = extractExplicitCityName(userText);
+  const countryInMessage = matchCountryOnly(userText) || localPatch.to_country;
+  const destMentioned = Boolean(
+    countryInMessage || explicitCity || localPatch.to_city || localPatch.to_country,
+  );
+  if (!destMentioned) return;
+
+  const countryChanged =
+    Boolean(localPatch.to_country) && localPatch.to_country !== existing.to_country;
+  const cityChanged =
+    Boolean(localPatch.to_city && localPatch.to_city !== existing.to_city) ||
+    Boolean(explicitCity && !textMentionsAlias(userText, existing.to_city || ''));
+
+  if (countryChanged && !localPatch.to_city && !explicitCity) {
+    delete params.to_city;
+  }
+
+  if (explicitCity) {
+    const cityPatch = {};
+    if (applyDestinationFromText(explicitCity, cityPatch)) {
+      Object.assign(params, cityPatch);
+    } else if (!params.to_city || countryChanged) {
+      params.to_city = explicitCity.charAt(0).toUpperCase() + explicitCity.slice(1);
+    }
+  }
+
+  if (countryChanged || cityChanged || explicitCity) {
+    params.destination_label = '';
+    params.destination_label_prep = '';
+  }
+
+  const budgetInMessage = parseBudgetAmount(userText);
+  if (
+    (countryChanged || cityChanged || explicitCity) &&
+    !budgetInMessage &&
+    !aiPatch.filter_price_max &&
+    !localPatch.filter_price_max
+  ) {
+    delete params.filter_price_max;
+  }
+}
+
 function extractFromAiResponse(aiResponse) {
   if (!aiResponse) return {};
   const sp = aiResponse.searchParams;
@@ -655,13 +706,15 @@ function extractFromAiResponse(aiResponse) {
 }
 
 function applyExtraction(conversation, userText, aiResponse, nextField = null) {
-  let params = conversation.searchParams || {};
+  const previousParams = conversation.searchParams || {};
+  let params = { ...previousParams };
   const aiPatch = extractFromAiResponse(aiResponse);
-  const localPatch = extractFromUserText(userText, params, nextField);
+  const localPatch = extractFromUserText(userText, previousParams, nextField);
 
   // Local rules (regex / aliases) override AI extraction for the same fields.
   params = mergeSearchParams(params, aiPatch);
   params = mergeSearchParams(params, localPatch);
+  reconcileDestinationAfterExtraction(params, previousParams, userText, localPatch, aiPatch);
 
   const intent = params.search_intent || inferSearchIntentFromParams(params);
   if (intent === 'package') {
