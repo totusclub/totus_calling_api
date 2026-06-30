@@ -343,6 +343,7 @@ function userWantsMoreResults(text) {
     /(хочу|можно|нужно)\s+(ещё|еще|друг|больше)/,
     /other\s+tour|other\s+hotel|more\s+tour|more\s+hotel|another\s+tour|another\s+hotel/i,
     /другие\s+(тур|вариант|отел|предлож)/,
+    /другие\s+на[йи][тт][иь]/,
     /еще\s+вариант|ещё\s+вариант/,
     /покажи\s+другие/,
     /предложи\s+другие/,

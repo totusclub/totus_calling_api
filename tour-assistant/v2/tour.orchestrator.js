@@ -17,7 +17,7 @@ const {
   buildSearchFingerprint,
   summarizeKnownParams,
 } = require('./conversation.state');
-const { formatDestinationPoPhrase, formatDestinationSummary, formatDestinationInPhrase } = require('./destination.labels');
+const { formatDestinationPoPhrase, formatDestinationSummary, formatDestinationInPhrase, syncDestinationLabels } = require('./destination.labels');
 const { extractDestinationQuery, extractExplicitCityName, resolveDestinationByText } = require('./destination.resolver');
 const { applyExtraction, mergeSearchParams } = require('./params.extractor');
 const { extractParamsWithAi } = require('./ai.param-extractor');
@@ -47,9 +47,16 @@ async function enrichDestinationFromApi(
   const query =
     nextFieldBefore === 'destination'
       ? String(userText || '').trim()
-      : extractDestinationQuery(userText) || extractExplicitCityName(userText);
+      : extractDestinationQuery(userText) ||
+        extractExplicitCityName(userText) ||
+        (params.to_city && params.to_country ? params.to_city : '');
 
-  if (!query || query.length < 2) return;
+  if (!query || query.length < 2) {
+    if (params.to_country) {
+      conversation.searchParams = syncDestinationLabels(params);
+    }
+    return;
+  }
 
   const destinationChanged =
     params.to_country !== paramsBefore.to_country ||
@@ -61,23 +68,29 @@ async function enrichDestinationFromApi(
     destinationChanged ||
     !params.destination_label;
 
-  if (!needsResolve) return;
+  if (!needsResolve) {
+    conversation.searchParams = syncDestinationLabels(params);
+    return;
+  }
 
   if (params.to_country && !destinationChanged) {
-    conversation.searchParams = mergeSearchParams(params, {
-      destination_label: formatDestinationSummary(params),
-      destination_label_prep: formatDestinationInPhrase(params),
-    });
+    conversation.searchParams = syncDestinationLabels(params);
     return;
   }
 
   const resolved = await resolveDestinationByText(query, params.from_city || 'Moscow');
-  if (!resolved) return;
+  if (!resolved) {
+    if (params.to_country) {
+      conversation.searchParams = syncDestinationLabels(params);
+    }
+    return;
+  }
 
   const { kind, ...patch } = resolved;
-  conversation.searchParams = mergeSearchParams(params, patch);
+  conversation.searchParams = syncDestinationLabels(mergeSearchParams(params, patch));
   if (kind === 'country') {
     delete conversation.searchParams.to_city;
+    conversation.searchParams = syncDestinationLabels(conversation.searchParams);
   }
 }
 
@@ -376,8 +389,16 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
         if (!justReceived.filter_price_max) {
           delete conversation.searchParams.filter_price_max;
         }
-        conversation.searchParams.destination_label = '';
-        conversation.searchParams.destination_label_prep = '';
+        if (!justReceived.filter_meals) {
+          delete conversation.searchParams.filter_meals;
+        }
+        if (!justReceived.filter_rating_min) {
+          delete conversation.searchParams.filter_rating_min;
+        }
+        delete conversation.searchParams.filter_line;
+        delete conversation.searchParams.filter_beach_surface;
+        delete conversation.searchParams.filter_sandy_beach;
+        conversation.searchParams = syncDestinationLabels(conversation.searchParams);
       }
       if (justReceived.filter_stars) {
         conversation.searchParams.filter_stars = justReceived.filter_stars;

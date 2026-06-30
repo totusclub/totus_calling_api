@@ -113,17 +113,8 @@ function isHotelSearch(params) {
   );
 }
 
-/**
- * Short label for summaries (nominative): «куда: Индонезия», «куда: Анталья».
- */
-function formatDestinationSummary(params) {
+function buildLiveDestinationSummary(params) {
   const p = params || {};
-  if (isHotelSearch(p) && p.hotel_name) {
-    return String(p.hotel_name).trim();
-  }
-  if (p.destination_label && String(p.destination_label).trim()) {
-    return String(p.destination_label).trim();
-  }
   const cityNom = p.to_city ? getCityNom(p.to_city) : '';
   const countryNom = p.to_country ? getCountryNom(p.to_country) : '';
   if (cityNom && countryNom && cityNom !== countryNom) {
@@ -134,17 +125,8 @@ function formatDestinationSummary(params) {
   return '';
 }
 
-/**
- * Phrase after «в» for search results: «в Индонезии», «в Анталье, Турция».
- */
-function formatDestinationInPhrase(params) {
+function buildLiveDestinationPhrase(params) {
   const p = params || {};
-  if (isHotelSearch(p) && p.hotel_name) {
-    return String(p.hotel_name).trim();
-  }
-  if (p.destination_label_prep && String(p.destination_label_prep).trim()) {
-    return String(p.destination_label_prep).trim();
-  }
   const cityPrep = p.to_city ? getCityPrep(p.to_city) : '';
   const countryNom = p.to_country ? getCountryNom(p.to_country) : '';
   if (cityPrep && countryNom) {
@@ -155,6 +137,48 @@ function formatDestinationInPhrase(params) {
   if (cityPrep) return cityPrep;
   if (p.to_country) return getCountryPrep(p.to_country);
   return '';
+}
+
+/**
+ * Short label for summaries (nominative): «куда: Индонезия», «куда: Анталья».
+ */
+function formatDestinationSummary(params) {
+  const p = params || {};
+  if (isHotelSearch(p) && p.hotel_name && (p.hotel_ids?.length || p.search_intent === 'hotel')) {
+    return String(p.hotel_name).trim();
+  }
+  const live = buildLiveDestinationSummary(p);
+  if (live) return live;
+  if (p.destination_label && String(p.destination_label).trim()) {
+    return String(p.destination_label).trim();
+  }
+  return '';
+}
+
+/**
+ * Phrase after «в» for search results: «в Индонезии», «в Анталье, Турция».
+ */
+function formatDestinationInPhrase(params) {
+  const p = params || {};
+  if (isHotelSearch(p) && p.hotel_name && (p.hotel_ids?.length || p.search_intent === 'hotel')) {
+    return String(p.hotel_name).trim();
+  }
+  const live = buildLiveDestinationPhrase(p);
+  if (live) return live;
+  if (p.destination_label_prep && String(p.destination_label_prep).trim()) {
+    return String(p.destination_label_prep).trim();
+  }
+  return '';
+}
+
+/** Persist labels that match current to_country / to_city (never leave stale Sharm when params say Belek). */
+function syncDestinationLabels(params) {
+  const p = params || {};
+  return {
+    ...p,
+    destination_label: formatDestinationSummary(p),
+    destination_label_prep: formatDestinationInPhrase(p),
+  };
 }
 
 /**
@@ -170,8 +194,11 @@ module.exports = {
   getCountryPrep,
   getCityNom,
   getCityPrep,
+  buildLiveDestinationSummary,
+  buildLiveDestinationPhrase,
   formatDestinationSummary,
   formatDestinationInPhrase,
   formatDestinationPoPhrase,
+  syncDestinationLabels,
   isHotelSearch,
 };

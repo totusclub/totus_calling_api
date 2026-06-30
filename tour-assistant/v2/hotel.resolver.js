@@ -15,6 +15,14 @@ const HOTEL_BRANDS =
 const TRAVEL_PHRASE =
   /^(поехать|отдохнуть|тур|вылет|на\s+море|в\s+|на\s+)/i;
 
+function isHotelsInCityPhrase(fragment) {
+  const s = (fragment || '').trim();
+  return (
+    /^отел[ьяейи]?\s+(?:в|во)\s+/i.test(s) ||
+    (/^отел/i.test(s) && /\s(?:в|во)\s+[а-яёa-z\-]+/i.test(s))
+  );
+}
+
 function extractHotelNameFromText(text) {
   const raw = (text || '').trim();
   if (!raw) return null;
@@ -22,11 +30,14 @@ function extractHotelNameFromText(text) {
   // «ищу отели с рейтингом 10» — фильтр по рейтингу, не название отеля
   if (/рейтинг|rating|оценк/i.test(raw) && /отел/i.test(raw)) return null;
 
+  // «ищу отели в Белеке» — поиск по городу, не конкретный отель
+  if (/отел/i.test(raw) && /\s(?:в|во)\s+[а-яёa-z\-]/i.test(raw)) return null;
+
   // "хочу поехать в Анталию" — направление, не отель
   if (/хочу\s+(поехать|отдохнуть|тур|вылет)/i.test(raw)) return null;
 
   const patterns = [
-    /(?:покажи|найди|найти|show me|find|ищу)\s+(?:мне\s+)?(?:отель\s+)?(.+)/i,
+    /(?:покажи|найди|найти|show me|find|ищу|ищи)\s+(?:мне\s+)?(?:отель\s+)?(.+)/i,
     /(?:хочу|нужен|интересует)\s+(?:мне\s+)?отель\s+(.+)/i,
     /(?:отель|hotel)\s+(.+)/i,
   ];
@@ -36,6 +47,7 @@ function extractHotelNameFromText(text) {
     if (match?.[1]) {
       const name = match[1].trim().replace(/[.!?]+$/, '');
       if (/рейтинг|rating|оценк/i.test(name)) continue;
+      if (isHotelsInCityPhrase(name)) continue;
       if (name.length >= 3 && !TRAVEL_PHRASE.test(name)) return name;
     }
   }

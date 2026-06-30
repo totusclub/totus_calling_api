@@ -582,6 +582,21 @@ function extractFromUserText(text, existing = {}, nextField = null) {
     }
   }
 
+  const hotelsInCityMatch = t.match(/отел[ьяейи]?\s+(?:в|во)\s+([а-яёa-z\-]+)/i);
+  if (hotelsInCityMatch && !patch.hotel_name) {
+    const rawCity = hotelsInCityMatch[1].trim().replace(/[,.!?]+$/, '');
+    const cityPatch = {};
+    if (applyDestinationFromText(rawCity, cityPatch)) {
+      Object.assign(patch, cityPatch);
+    } else {
+      patch.to_city = rawCity.charAt(0).toUpperCase() + rawCity.slice(1);
+    }
+    patch.search_intent = 'package';
+    patch.search_type = 'package';
+    patch.hotel_name = '';
+    patch.hotel_ids = [];
+  }
+
   const hotelName = extractHotelNameFromText(text);
   const intent =
     patch.search_intent || existing.search_intent || inferSearchIntentFromParams({ ...existing, ...patch });
@@ -683,6 +698,7 @@ function reconcileDestinationAfterExtraction(params, existing, userText, localPa
   if (countryChanged || cityChanged || explicitCity) {
     params.destination_label = '';
     params.destination_label_prep = '';
+    clearStaleFiltersOnDestinationChange(params, userText, localPatch, aiPatch);
   }
 
   const budgetInMessage = parseBudgetAmount(userText);
@@ -694,6 +710,28 @@ function reconcileDestinationAfterExtraction(params, existing, userText, localPa
   ) {
     delete params.filter_price_max;
   }
+
+  const { syncDestinationLabels } = require('./destination.labels');
+  if (params.to_country && (countryChanged || cityChanged || explicitCity)) {
+    Object.assign(params, syncDestinationLabels(params));
+  }
+}
+
+function clearStaleFiltersOnDestinationChange(params, userText, localPatch, aiPatch) {
+  if (!mapMealPreference(userText) && !localPatch.filter_meals && !aiPatch.filter_meals) {
+    delete params.filter_meals;
+  }
+  if (!mapStarFilter(userText) && !localPatch.filter_stars && !aiPatch.filter_stars) {
+    delete params.filter_stars;
+  }
+  if (!mapRatingFilter(userText) && !localPatch.filter_rating_min && !aiPatch.filter_rating_min) {
+    delete params.filter_rating_min;
+    if (params.sort_by === 'rating,desc') params.sort_by = 'relevance';
+  }
+  delete params.filter_line;
+  delete params.filter_beach_surface;
+  delete params.filter_regions;
+  delete params.filter_sandy_beach;
 }
 
 function extractFromAiResponse(aiResponse) {

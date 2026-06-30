@@ -67,6 +67,42 @@ function applyPriceMaxFilter(hotels, filterPriceMax) {
   });
 }
 
+function mealMatchesFilter(mealType, filterMeals) {
+  if (!filterMeals) return true;
+  const meal = String(mealType || '').toLowerCase();
+  const filter = String(filterMeals).toUpperCase();
+
+  if (filter === 'UAI') {
+    return meal.includes('ультра') || meal.includes('ultra') || meal.includes('uai');
+  }
+  if (filter === 'AI') {
+    return (
+      meal.includes('всё включ') ||
+      meal.includes('все включ') ||
+      meal.includes('all inclusive') ||
+      meal.includes('ультра') ||
+      meal.includes('ultra')
+    );
+  }
+  if (filter.includes(',')) {
+    const codes = filter.split(',').map((c) => c.trim());
+    return codes.some((code) => {
+      if (code === 'UAI') return meal.includes('ультра') || meal.includes('ultra');
+      if (code === 'AI') return meal.includes('всё включ') || meal.includes('все включ');
+      return meal.includes(code.toLowerCase());
+    });
+  }
+  return true;
+}
+
+function applyMealsFilter(hotels, filterMeals) {
+  if (!filterMeals) return hotels || [];
+  return (hotels || []).filter((hotel) => {
+    const meal = hotel.meal_type || (hotel.hotel || hotel).meal_type || '';
+    return mealMatchesFilter(meal, filterMeals);
+  });
+}
+
 function excludeHotelsById(hotels, excludeIds = []) {
   if (!excludeIds?.length) return hotels || [];
   const blocked = new Set(excludeIds.map(String));
@@ -355,6 +391,8 @@ async function collectHotelsFromPages({
   const pageLimit = filterParams.page_limit || 3;
   const ratingMin = searchParams.filter_rating_min;
   const hasRatingFilter = Number(ratingMin) > 0;
+  const priceCap = Number(searchParams.filter_price_max);
+  const hasPriceCap = Number.isFinite(priceCap) && priceCap > 0;
   const collected = [];
   const seen = new Set((excludeHotelIds || []).map(String));
   let lastPage = startPage;
@@ -370,9 +408,16 @@ async function collectHotelsFromPages({
     lastPage = page;
     if (!batch.length) break;
 
-    const candidates = hasRatingFilter
+    let candidates = hasRatingFilter
       ? applyRatingMinFilter(batch, ratingMin)
       : batch;
+
+    if (hasPriceCap) {
+      candidates = candidates.filter((hotel) => {
+        const price = getEffectiveHotelPrice(hotel);
+        return price === null || price <= priceCap;
+      });
+    }
 
     for (const hotel of candidates) {
       const key = hotelKey(hotel);
@@ -413,6 +458,7 @@ async function tryRelaxedSearch(conversation, searchParams, { excludeHotelIds = 
 
   let enriched = await enrichHotelsWithRoomOffers(hotels, requestId, relaxed);
   enriched = applyPriceMaxFilter(enriched, relaxed.filter_price_max);
+  enriched = applyMealsFilter(enriched, relaxed.filter_meals);
   enriched = applyRatingMinFilter(enriched, relaxed.filter_rating_min);
 
   if (enriched.length) {
@@ -463,9 +509,12 @@ async function runHotelSearch(
   const priceCap = searchParams.filter_price_max;
   const ratingMin = searchParams.filter_rating_min;
 
-  const finalizeHotels = async (hotels, requestId) => {
-    let enriched = await enrichHotelsWithRoomOffers(hotels, requestId, searchParams);
-    enriched = applyPriceMaxFilter(enriched, priceCap);
+  const finalizeHotels = async (hotels, requestId, { skipPriceCap = false } = {}) => {
+    const cap = skipPriceCap ? '' : priceCap;
+    const enrichParams = skipPriceCap ? { ...searchParams, filter_price_max: '' } : searchParams;
+    let enriched = await enrichHotelsWithRoomOffers(hotels, requestId, enrichParams);
+    enriched = applyPriceMaxFilter(enriched, cap);
+    enriched = applyMealsFilter(enriched, searchParams.filter_meals);
     enriched = applyRatingMinFilter(enriched, ratingMin);
     if (Number(ratingMin) > 0) {
       enriched.sort((a, b) => getHotelRating(b) - getHotelRating(a));
@@ -520,6 +569,26 @@ async function runHotelSearch(
 
   let enriched = await finalizeHotels(hotels, requestId);
 
+  if (
+    !enriched.length &&
+    !isPagination &&
+    priceCap &&
+    searchParams.hotel_ids?.length
+  ) {
+    const overBudget = await finalizeHotels(hotels, requestId, { skipPriceCap: true });
+    if (overBudget.length) {
+      const prices = overBudget.map(getEffectiveHotelPrice).filter((p) => p != null);
+      const actualMinPrice = prices.length ? Math.min(...prices) : null;
+      return {
+        hotels: overBudget,
+        triedRelaxed: false,
+        budgetExceeded: true,
+        hotelOverBudget: true,
+        actualMinPrice,
+      };
+    }
+  }
+
   if (!enriched.length && !isPagination && priceCap) {
     return { hotels: [], triedRelaxed: false, budgetExceeded: true };
   }
@@ -551,6 +620,7 @@ module.exports = {
   applyStarsFilter,
   parseStarsFilter,
   applyPriceMaxFilter,
+  applyMealsFilter,
   applyRatingMinFilter,
   getHotelRating,
   getEffectiveHotelPrice,

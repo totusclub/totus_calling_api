@@ -107,9 +107,27 @@ function composeHotelSearchResultMessage(params, hotels, { isPagination = false 
   return `${prefix} ${count} ${label} по отелю ${name}.`;
 }
 
-function composeResultsIntro(params, hotels, { isPagination = false, isHotelSearch = false, ratingFallback = false } = {}) {
+function composeResultsIntro(params, hotels, {
+  isPagination = false,
+  isHotelSearch = false,
+  ratingFallback = false,
+  hotelOverBudget = false,
+  actualMinPrice = null,
+} = {}) {
   const count = hotels?.length || 0;
   const hasRatingFilter = Number(params.filter_rating_min) > 0;
+
+  if (hotelOverBudget && count > 0 && actualMinPrice) {
+    const budget = params.filter_price_max
+      ? Number(params.filter_price_max).toLocaleString('ru-RU')
+      : null;
+    const intro = composeHotelSearchResultMessage(params, hotels, { isPagination }) ||
+      composeResultsCountMessage(params, count, { isPagination });
+    return [
+      `Минимальная цена — от ${Math.round(actualMinPrice).toLocaleString('ru-RU')} ₽${budget ? ` (ваш бюджет до ${budget} ₽)` : ''}.`,
+      intro,
+    ].join(' ');
+  }
 
   if (hasRatingFilter && count > 0) {
     return composeRatingFilterResultMessage(params, count, { isPagination, ratingFallback });
@@ -149,7 +167,13 @@ function composeResultsIntro(params, hotels, { isPagination = false, isHotelSear
   return composeResultsCountMessage(params, count, { isPagination: false });
 }
 
-function composeNoResultsAdvice(params, { triedRelaxed = false, budgetExceeded = false, ratingMinExceeded = false } = {}) {
+function composeNoResultsAdvice(params, {
+  triedRelaxed = false,
+  budgetExceeded = false,
+  ratingMinExceeded = false,
+  hotelOverBudget = false,
+  actualMinPrice = null,
+} = {}) {
   const dest = formatDestinationPoPhrase(params);
   const budget = params.filter_price_max
     ? Number(params.filter_price_max).toLocaleString('ru-RU')
@@ -157,6 +181,14 @@ function composeNoResultsAdvice(params, { triedRelaxed = false, budgetExceeded =
   const ratingMin = params.filter_rating_min
     ? Number(params.filter_rating_min).toFixed(1)
     : null;
+
+  if (budgetExceeded && budget && hotelOverBudget && actualMinPrice) {
+    const hotelName = params.hotel_name || 'этому отелю';
+    return [
+      `По ${hotelName} минимальная цена сейчас от ${Math.round(actualMinPrice).toLocaleString('ru-RU')} ₽ — это выше вашего бюджета до ${budget} ₽.`,
+      'Могу сдвинуть даты или увеличить бюджет — что попробуем?',
+    ].join('\n');
+  }
 
   if (budgetExceeded && budget) {
     return [

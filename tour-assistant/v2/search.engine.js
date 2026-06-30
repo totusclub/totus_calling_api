@@ -1,17 +1,25 @@
 const { ConversationStage, buildSearchFingerprint, prepareSearchParams } = require('./conversation.state');
+const { syncDestinationLabels } = require('./destination.labels');
 const hotelSearch = require('./hotel.search.service');
 const { createAssistantMessage } = require('./dto/messages');
 const { composeResultsText } = require('./response.composer');
 const memory = require('./memory.store');
 
 async function executeSearch(conversation, { isPagination = false, excludeHotelIds = [] } = {}) {
-  conversation.searchParams = prepareSearchParams(conversation.searchParams);
+  conversation.searchParams = syncDestinationLabels(prepareSearchParams(conversation.searchParams));
   conversation.stage = ConversationStage.SEARCHING;
   memory.saveConversation(conversation);
 
   try {
-    const { hotels, triedRelaxed, budgetExceeded, ratingMinExceeded, ratingFallback } =
-      await hotelSearch.runHotelSearch(
+    const {
+      hotels,
+      triedRelaxed,
+      budgetExceeded,
+      ratingMinExceeded,
+      ratingFallback,
+      hotelOverBudget,
+      actualMinPrice,
+    } = await hotelSearch.runHotelSearch(
       conversation,
       conversation.searchParams,
       { isPagination, excludeHotelIds },
@@ -26,9 +34,11 @@ async function executeSearch(conversation, { isPagination = false, excludeHotelI
       isPagination,
       isHotelSearch,
       triedRelaxed,
-      budgetExceeded,
+      budgetExceeded: budgetExceeded && !hotelOverBudget,
       ratingMinExceeded,
       ratingFallback,
+      hotelOverBudget,
+      actualMinPrice,
     });
 
     const resultsMsg = createAssistantMessage({
