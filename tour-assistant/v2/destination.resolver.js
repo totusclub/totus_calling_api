@@ -8,7 +8,40 @@ const api = axios.create({
 });
 
 const MONTH_LIKE =
-  /^(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)/i;
+  /^(январ|феврал|март|апрел|ма[йя]|июн|июл|августа|сентябр|октябр|ноябр|декабр)/i;
+
+/** Canonical API city names — checked before autocomplete (avoids Greece «Bali» vs Indonesia). */
+const KNOWN_CITY_RESOLVES = {
+  bali: { country: 'ID', city: 'Bali Island' },
+  бали: { country: 'ID', city: 'Bali Island' },
+  балли: { country: 'ID', city: 'Bali Island' },
+  'bali island': { country: 'ID', city: 'Bali Island' },
+  'о. бали': { country: 'ID', city: 'Bali Island' },
+};
+
+function resolveKnownCityQuery(query) {
+  const key = normalizeForMatch(query);
+  if (!key) return null;
+  const hit = KNOWN_CITY_RESOLVES[key];
+  if (!hit) return null;
+  return buildPatchFromKnownCity(hit);
+}
+
+function buildPatchFromKnownCity({ country, city }) {
+  const countryRu = getCountryNom(country) || country;
+  const cityDisplay = getCityNom(city) || city;
+  const label = `${cityDisplay}, ${countryRu}`;
+  const prep = `${getCityPrep(city) || cityDisplay}, ${countryRu}`;
+  return {
+    kind: 'city',
+    to_country: country,
+    to_city: city,
+    destination_label: label,
+    destination_label_prep: prep,
+    search_intent: 'package',
+    search_type: 'package',
+  };
+}
 
 /**
  * Pull a destination phrase from free-form user text for autocomplete lookup.
@@ -100,14 +133,27 @@ function scoreResult(result, query, groupName) {
 }
 
 function pickBestResult(groups, query) {
+  const known = resolveKnownCityQuery(query);
+  if (known) return { ...known, _group: 'regions', _known: true };
+
   let best = null;
   let bestScore = 0;
+  const q = normalizeForMatch(query);
 
   for (const groupName of ['countries', 'regions', 'metaregions']) {
     const group = groups.find((g) => g.group_name === groupName);
     for (const result of group?.results || []) {
       if (!result?.iso2) continue;
-      const score = scoreResult(result, query, groupName);
+      let score = scoreResult(result, query, groupName);
+      // Prefer Indonesia Bali Island over Greece Bali for «bali»/«бали» queries
+      if (/^бал[ил]/i.test(q) || q === 'bali' || q === 'bali island') {
+        if (result.iso2 === 'ID' && /bali/i.test(result.name_en || result.name || '')) {
+          score += 40;
+        }
+        if (result.iso2 === 'GR' && normalizeForMatch(result.name_en) === 'bali') {
+          score -= 30;
+        }
+      }
       if (score > bestScore) {
         bestScore = score;
         best = { ...result, _group: groupName };
@@ -119,6 +165,10 @@ function pickBestResult(groups, query) {
 }
 
 function buildPatchFromResult(item) {
+  if (item._known) {
+    const { _known, _group, ...patch } = item;
+    return patch;
+  }
   const iso2 = item.iso2 || '';
   const group = item._group;
 
@@ -165,6 +215,9 @@ function buildPatchFromResult(item) {
 async function resolveDestinationByText(query, fromCity = 'Moscow') {
   const trimmed = String(query || '').trim();
   if (trimmed.length < 2) return null;
+
+  const knownCity = resolveKnownCityQuery(trimmed);
+  if (knownCity) return knownCity;
 
   try {
     const res = await api.get('/references/autocomplete_v2', {

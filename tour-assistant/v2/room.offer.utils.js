@@ -24,10 +24,24 @@ function getMealLabel(mealId, mealTypes = []) {
   return found?.description || MEAL_LABELS[mealId] || mealId;
 }
 
+function mealIdMatchesFilter(mealId, filterMeals) {
+  if (!filterMeals) return true;
+  const id = String(mealId || '').toUpperCase();
+  const filter = String(filterMeals).toUpperCase();
+
+  if (filter === 'UAI') return id === 'UAI';
+  if (filter === 'AI') return id === 'AI' || id === 'UAI';
+  if (filter.includes(',')) {
+    const allowed = filter.split(',').map((s) => s.trim());
+    return allowed.includes(id);
+  }
+  return id === filter;
+}
+
 /**
  * Find cheapest room offer from hotels-rooms response.
  */
-function findCheapestRoomOffer(roomsData, { startDate, nights, maxPrice } = {}) {
+function findCheapestRoomOffer(roomsData, { startDate, nights, maxPrice, filterMeals } = {}) {
   const rooms = roomsData?.result || roomsData || [];
   if (!Array.isArray(rooms) || !rooms.length) return null;
 
@@ -44,6 +58,7 @@ function findCheapestRoomOffer(roomsData, { startDate, nights, maxPrice } = {}) 
 
     for (const [mealId, offers] of Object.entries(offersMap)) {
       if (!Array.isArray(offers)) continue;
+      if (!mealIdMatchesFilter(mealId, filterMeals)) continue;
       const mealType = getMealLabel(mealId, room.meal_types);
 
       for (const offer of offers) {
@@ -82,4 +97,5 @@ module.exports = {
   MEAL_LABELS,
   findCheapestRoomOffer,
   getMealLabel,
+  mealIdMatchesFilter,
 };

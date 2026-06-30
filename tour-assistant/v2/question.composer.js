@@ -54,7 +54,7 @@ async function generateCollectionQuestion(
     .filter((m) => m.role === 'user' || m.role === 'assistant')
     .map((m) => ({ role: m.role, content: m.content }));
 
-  const knownSummary = summarizeKnownParams(knownParams);
+  const knownSummary = summarizeKnownParams(knownParams, { nextField, justReceived });
   const receivedKeys = Object.keys(justReceived).filter(
     (k) => justReceived[k] !== undefined && justReceived[k] !== '',
   );

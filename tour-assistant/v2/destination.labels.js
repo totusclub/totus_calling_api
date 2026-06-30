@@ -53,6 +53,7 @@ const CITY_LABELS = {
   Dubai: { nom: 'Дубай', prep: 'Дубае' },
   'Abu Dhabi': { nom: 'Абу-Даби', prep: 'Абу-Даби' },
   Bali: { nom: 'Бали', prep: 'Бали' },
+  'Bali Island': { nom: 'Бали', prep: 'Бали' },
   Hurghada: { nom: 'Хургада', prep: 'Хургаде' },
   'Sharm El Sheikh': { nom: 'Шарм-эль-Шейх', prep: 'Шарм-эль-Шейхе' },
   Phuket: { nom: 'Пхукет', prep: 'Пхукете' },

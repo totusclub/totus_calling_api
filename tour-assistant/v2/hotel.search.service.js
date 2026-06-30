@@ -345,6 +345,7 @@ async function fetchHotelRoomOffer(requestId, hotelId, searchParams) {
       startDate: searchParams.start_date,
       nights: searchParams.nights,
       maxPrice: searchParams.filter_price_max,
+      filterMeals: searchParams.filter_meals,
     });
   } catch (err) {
     console.warn('[V2 hotel.search] hotels-rooms failed for', hotelId, err.message);
@@ -365,6 +366,9 @@ async function enrichHotelsWithRoomOffers(hotels, requestId, searchParams) {
     }
 
     const roomOffer = await fetchHotelRoomOffer(requestId, hotelId, searchParams);
+    if (searchParams.filter_meals && !roomOffer) {
+      return null;
+    }
     if (hasCap && roomOffer?.price && Number(roomOffer.price) > cap) {
       return null;
     }

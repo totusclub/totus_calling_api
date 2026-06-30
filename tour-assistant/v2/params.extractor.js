@@ -40,8 +40,10 @@ const CITY_DESTINATION_ALIASES = {
   белек: { country: 'TR', city: 'Belek' },
   paris: { country: 'FR', city: 'Paris' },
   париж: { country: 'FR', city: 'Paris' },
-  bali: { country: 'ID', city: 'Bali' },
-  бали: { country: 'ID', city: 'Bali' },
+  bali: { country: 'ID', city: 'Bali Island' },
+  бали: { country: 'ID', city: 'Bali Island' },
+  балли: { country: 'ID', city: 'Bali Island' },
+  'bali island': { country: 'ID', city: 'Bali Island' },
   hurghada: { country: 'EG', city: 'Hurghada' },
   хургада: { country: 'EG', city: 'Hurghada' },
   phuket: { country: 'TH', city: 'Phuket' },
@@ -77,6 +79,8 @@ const COUNTRY_ONLY_ALIASES = {
   vietnam: 'VN',
   мальдивы: 'MV',
   maldives: 'MV',
+  малдиви: 'MV',
+  мальдиви: 'MV',
   италия: 'IT',
   italy: 'IT',
   франция: 'FR',
@@ -215,11 +219,13 @@ function mapMealPreference(text) {
     return 'AI';
   }
   if (
-    /стандарт|standard|завтрак|bb|hb|fb|ro|полупансион|полный\s*пансион|без\s*пит/i.test(t) ||
+    /стандарт|standard|завтрак|bb|hb|fb|ro|полупансион|полный\s*пансион/i.test(t) ||
     /^(bb|hb|fb|ro)$/i.test((text || '').trim())
   ) {
+    if (/без\s*пит[аиейюя]|^ro$/i.test(t)) return 'RO';
     return 'BB,HB,FB,RO';
   }
+  if (/без\s*пит[аиейюя]/i.test(t)) return 'RO';
   return null;
 }
 

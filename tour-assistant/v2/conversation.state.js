@@ -387,8 +387,9 @@ function formatMealsLabel(filterMeals) {
   return filterMeals;
 }
 
-function summarizeKnownParams(searchParams) {
+function summarizeKnownParams(searchParams, options = {}) {
   const p = searchParams || {};
+  const { nextField, justReceived } = options;
   const parts = [];
   const intent = inferSearchIntentFromParams(p) || p.search_intent;
   if (intent === 'hotel') parts.push('поиск: конкретный отель');
@@ -405,7 +406,10 @@ function summarizeKnownParams(searchParams) {
     parts.push(`детей: ${kidsCount}`);
     if (p.kids_ages?.length) parts.push(`возраст детей: ${p.kids_ages.join(', ')}`);
   }
-  if (p.filter_price_max) {
+  const budgetInTurn =
+    nextField === 'filter_price_max' ||
+    (justReceived && justReceived.filter_price_max !== undefined);
+  if (p.filter_price_max && budgetInTurn) {
     parts.push(`бюджет до ${Number(p.filter_price_max).toLocaleString('ru-RU')} ₽`);
   }
   if (p.filter_meals) parts.push(`питание: ${formatMealsLabel(p.filter_meals)}`);

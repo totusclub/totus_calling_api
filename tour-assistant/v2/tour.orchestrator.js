@@ -359,12 +359,22 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
     const alreadySearched = conversation.lastSearchFingerprint === fingerprint;
     const wantsRetry = userWantsRetrySearch(userText);
     const filtersChanged = searchFiltersChanged(justReceived);
+    const shownCount = getLastShownHotels(conversation).length;
+    const retryAfterNoResults =
+      userAsksWhyNoResults(userText) && (conversation.searchFailed || shownCount === 0);
     const inResultsStage =
       conversation.stage === ConversationStage.RESULTS ||
       conversation.searchFailed ||
       conversation.lastSearchFingerprint;
 
-    if (alreadySearched && inResultsStage && !wantsRetry && !filtersChanged && !wantsMore) {
+    if (
+      alreadySearched &&
+      inResultsStage &&
+      !wantsRetry &&
+      !filtersChanged &&
+      !wantsMore &&
+      !retryAfterNoResults
+    ) {
       const reply = userAsksWhyNoResults(userText)
         ? buildPostSearchReply(conversation, userText, params)
         : await generatePostSearchReply(userText, conversation, params);
@@ -377,7 +387,7 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
       return payload;
     }
 
-    if (filtersChanged) {
+    if (filtersChanged || retryAfterNoResults) {
       conversation.searchParams = mergeSearchParams(params, { page_number: 1 });
       conversation.searchSession = {
         requestId: null,
