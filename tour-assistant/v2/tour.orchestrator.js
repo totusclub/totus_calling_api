@@ -16,6 +16,8 @@ const {
   buildSearchFingerprint,
   summarizeKnownParams,
 } = require('./conversation.state');
+const { formatDestinationPoPhrase, formatDestinationSummary, formatDestinationInPhrase } = require('./destination.labels');
+const { extractDestinationQuery, resolveDestinationByText } = require('./destination.resolver');
 const { applyExtraction, mergeSearchParams } = require('./params.extractor');
 const { extractParamsWithAi } = require('./ai.param-extractor');
 const { resolveHotelByName } = require('./hotel.resolver');
@@ -30,6 +32,52 @@ const manager = require('./conversation.manager');
 function ensureConversationState(conversation) {
   if (!conversation.stage) conversation.stage = ConversationStage.COLLECTING_PARAMS;
   if (!conversation.results) conversation.results = { hotels: [] };
+}
+
+async function enrichDestinationFromApi(
+  conversation,
+  userText,
+  nextFieldBefore,
+  paramsBefore = {},
+) {
+  const params = conversation.searchParams || {};
+  if (params.hotel_ids?.length || params.search_intent === 'hotel') return;
+
+  const query =
+    nextFieldBefore === 'destination'
+      ? String(userText || '').trim()
+      : extractDestinationQuery(userText);
+
+  if (!query || query.length < 2) return;
+
+  const destinationChanged =
+    params.to_country !== paramsBefore.to_country ||
+    params.to_city !== paramsBefore.to_city;
+
+  const needsResolve =
+    nextFieldBefore === 'destination' ||
+    !params.to_country ||
+    destinationChanged ||
+    !params.destination_label;
+
+  if (!needsResolve) return;
+
+  if (params.to_country && !destinationChanged) {
+    conversation.searchParams = mergeSearchParams(params, {
+      destination_label: formatDestinationSummary(params),
+      destination_label_prep: formatDestinationInPhrase(params),
+    });
+    return;
+  }
+
+  const resolved = await resolveDestinationByText(query, params.from_city || 'Moscow');
+  if (!resolved) return;
+
+  const { kind, ...patch } = resolved;
+  conversation.searchParams = mergeSearchParams(params, patch);
+  if (kind === 'country') {
+    delete conversation.searchParams.to_city;
+  }
 }
 
 function buildApiPayload(conversation) {
@@ -94,7 +142,7 @@ function buildPostSearchReply(conversation, userText, params) {
       return `Поиск завершился с ошибкой при обработке результатов. Параметры сохранены: ${known}. Напишите «найди снова» — повторю поиск, или укажите другие даты.`;
     }
     if (!hadResults) {
-      return `По ${params.to_city || 'этому направлению'} на ${params.start_date || 'выбранные даты'} (${params.nights || '?'} ночей) сейчас нет доступных туров. Могу сдвинуть даты на неделю или предложить соседний курорт — что предпочитаете?`;
+      return `По ${formatDestinationPoPhrase(params)} на ${params.start_date || 'выбранные даты'} (${params.nights || '?'} ночей) сейчас нет доступных туров. Могу сдвинуть даты на неделю или предложить соседний курорт — что предпочитаете?`;
     }
     return `Результаты уже показаны выше. Могу найти другие варианты — напишите «ещё» или уточните даты.`;
   }
@@ -170,7 +218,26 @@ async function processTurn(conversationId, userText, { userId, onChunk } = {}) {
 
   ensureConversationState(conversation);
   manager.appendUserMessage(conversation, userText);
+  memory.saveConversation(conversation);
 
+  try {
+    return await processTurnBody(conversation, userText, { userId, onChunk });
+  } catch (err) {
+    console.error('[V2 tour.orchestrator] processTurn failed:', err);
+    const msg = createTextMessage({
+      role: 'assistant',
+      content:
+        'Извините, не удалось обработать сообщение. Попробуйте отправить ещё раз или уточните запрос.',
+    });
+    conversation.messages.push(msg);
+    memory.saveConversation(conversation);
+    const payload = buildApiPayload(conversation);
+    if (onChunk) onChunk({ event: 'final_message', data: payload });
+    return payload;
+  }
+}
+
+async function processTurnBody(conversation, userText, { onChunk } = {}) {
   if (onChunk) onChunk({ event: 'typing', data: { active: true } });
 
   const nextFieldBefore = getNextMissingField(conversation.searchParams);
@@ -183,6 +250,7 @@ async function processTurn(conversationId, userText, { userId, onChunk } = {}) {
     applyExtraction(conversation, userText, null, nextFieldBefore);
     const aiParams = await extractParamsWithAi(userText, conversation, nextFieldBefore);
     applyExtraction(conversation, userText, { searchParams: aiParams }, nextFieldBefore);
+    await enrichDestinationFromApi(conversation, userText, nextFieldBefore, paramsBefore);
   } else {
     applyExtraction(conversation, userText, null, nextFieldBefore);
   }
@@ -202,6 +270,8 @@ async function processTurn(conversationId, userText, { userId, onChunk } = {}) {
       from_city: paramsBefore.from_city,
       to_city: paramsBefore.to_city,
       to_country: paramsBefore.to_country,
+      destination_label: paramsBefore.destination_label,
+      destination_label_prep: paramsBefore.destination_label_prep,
       start_date: paramsBefore.start_date,
       nights: paramsBefore.nights,
       adults: paramsBefore.adults,

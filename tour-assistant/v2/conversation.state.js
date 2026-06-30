@@ -68,7 +68,7 @@ function getCollectionSteps(searchParams) {
   if (isHotelIntent({ ...searchParams, search_intent: searchParams?.search_intent || inferred })) {
     steps.push('hotel_resolve');
   }
-  steps.push('start_date', 'nights', 'adults', 'kids');
+  steps.push('start_date', 'nights', 'adults');
   const kidsCount = getKidsCount(searchParams);
   if (kidsCount !== null && kidsCount > 0) {
     steps.push('kids_ages');
@@ -82,6 +82,7 @@ function applyDefaults(searchParams) {
   const p = { ...searchParams };
   if (!p.from_country) p.from_country = 'RU';
   if (!Array.isArray(p.kids_ages)) p.kids_ages = [];
+  if (p.kids === '' || p.kids === undefined || p.kids === null) p.kids = '0';
   if (!p.search_type) p.search_type = 'package';
   if (!p.page_number) p.page_number = 1;
   if (!p.page_limit) p.page_limit = 3;
@@ -96,7 +97,9 @@ function prepareSearchParams(searchParams) {
   if (p.kids === '' || p.kids === undefined || p.kids === null) p.kids = '0';
   if (!Array.isArray(p.kids_ages)) p.kids_ages = [];
   const kidsCount = parseInt(p.kids || '0', 10);
-  if (kidsCount === 0) p.kids_ages = [];
+  if (kidsCount === 0) {
+    p.kids_ages = [];
+  }
   return normalizeSearchParamsForApi(p);
 }
 
@@ -354,6 +357,8 @@ function userWantsMoreHotelsAfterResults(text) {
   return false;
 }
 
+const { formatDestinationSummary } = require('./destination.labels');
+
 function formatMealsLabel(filterMeals) {
   const v = String(filterMeals || '').toUpperCase();
   if (v === 'AI' || v.includes('AI')) return 'всё включено';
@@ -368,14 +373,15 @@ function summarizeKnownParams(searchParams) {
   if (intent === 'hotel') parts.push('поиск: конкретный отель');
   else if (intent === 'package') parts.push('поиск: тур/направление');
   if (p.from_city) parts.push(`вылет из: ${p.from_city}`);
+  const destLabel = formatDestinationSummary(p);
   if (p.hotel_name) parts.push(`отель: ${p.hotel_name}`);
-  else if (p.to_city) parts.push(`куда: ${p.to_city}`);
-  else if (p.to_country) parts.push(`куда: ${p.to_country}`);
+  else if (destLabel) parts.push(`куда: ${destLabel}`);
   if (p.start_date) parts.push(`дата: ${p.start_date}`);
   if (p.nights) parts.push(`ночей: ${p.nights}`);
   if (p.adults) parts.push(`взрослых: ${p.adults}`);
-  if (p.kids !== '' && p.kids !== undefined && p.kids !== null) {
-    parts.push(`детей: ${p.kids}`);
+  const kidsCount = getKidsCount(p);
+  if (kidsCount !== null && kidsCount > 0) {
+    parts.push(`детей: ${kidsCount}`);
     if (p.kids_ages?.length) parts.push(`возраст детей: ${p.kids_ages.join(', ')}`);
   }
   if (p.filter_price_max) {

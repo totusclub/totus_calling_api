@@ -1,6 +1,7 @@
 const axios = require('axios');
 const { DEEPSEEK_API_KEY, DEEPSEEK_API_URL } = require('./config');
 const { stripMetaLanguage } = require('./response.composer');
+const { formatDestinationPoPhrase } = require('./destination.labels');
 const { summarizeKnownParams, getLastShownHotels } = require('./conversation.state');
 
 const POST_SEARCH_PROMPT = `Ты — премиальный travel-консьерж Totus. Пользователь уже получил подборку отелей и пишет ответ.
@@ -160,7 +161,7 @@ async function generateHotelComparisonReply(userText, conversation, params, hote
 function buildFallbackPostSearchReply(userText, conversation, params) {
   const shown = getLastShownHotels(conversation);
   const hadResults = shown.length > 0;
-  const dest = params.to_city || params.to_country || 'направление';
+  const dest = formatDestinationPoPhrase(params);
 
   if (!hadResults) {
     return `По ${dest} вариантов пока нет. Могу сдвинуть даты, изменить бюджет или предложить соседний курорт — что попробуем?`;

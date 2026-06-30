@@ -79,6 +79,61 @@ const COUNTRY_ONLY_ALIASES = {
   italy: 'IT',
   франция: 'FR',
   france: 'FR',
+  индонезия: 'ID',
+  indonesia: 'ID',
+  'шри-ланка': 'LK',
+  'шри ланка': 'LK',
+  'sri lanka': 'LK',
+  оман: 'OM',
+  oman: 'OM',
+  катар: 'QA',
+  qatar: 'QA',
+  иордания: 'JO',
+  jordan: 'JO',
+  черногория: 'ME',
+  montenegro: 'ME',
+  хорватия: 'HR',
+  croatia: 'HR',
+  индия: 'IN',
+  india: 'IN',
+  китай: 'CN',
+  china: 'CN',
+  япония: 'JP',
+  japan: 'JP',
+  корея: 'KR',
+  'южная корея': 'KR',
+  'south korea': 'KR',
+  сейшелы: 'SC',
+  seychelles: 'SC',
+  маврикий: 'MU',
+  mauritius: 'MU',
+  куба: 'CU',
+  cuba: 'CU',
+  мексика: 'MX',
+  mexico: 'MX',
+  доминикана: 'DO',
+  dominicana: 'DO',
+  'доминиканская республика': 'DO',
+  танзания: 'TZ',
+  tanzania: 'TZ',
+  грузия: 'GE',
+  georgia: 'GE',
+  армения: 'AM',
+  armenia: 'AM',
+  азербайджан: 'AZ',
+  azerbaijan: 'AZ',
+  португалия: 'PT',
+  portugal: 'PT',
+  германия: 'DE',
+  germany: 'DE',
+  австрия: 'AT',
+  austria: 'AT',
+  швейцария: 'CH',
+  switzerland: 'CH',
+  чехия: 'CZ',
+  czechia: 'CZ',
+  сша: 'US',
+  usa: 'US',
 };
 
 const SORTED_CITY_ENTRIES = Object.entries(CITY_DESTINATION_ALIASES).sort(
@@ -362,14 +417,24 @@ function extractFromUserText(text, existing = {}, nextField = null) {
   const stars = mapStarFilter(text);
   if (stars) patch.filter_stars = stars;
 
-  const kidsCountMatch = t.match(/(\d+)\s*(дет|реб)/);
+  const kidsCountMatch =
+    t.match(/(\d+)\s*(?:дет|ребён|ребен|child|children|childe|kids?)\b/) ||
+    t.match(/(?:child|children|childe|kids?)\s*[:\-]?\s*(\d+)/);
   if (kidsCountMatch) patch.kids = kidsCountMatch[1];
   if (/^(нет|без)\s*дет/i.test(t)) patch.kids = '0';
+  if (/\b(without|no)\s+(child|children|kids?)\b/i.test(t)) patch.kids = '0';
+  if (/\bбез\s+дет/i.test(t)) patch.kids = '0';
 
-  const agesInline = t.match(/дет[^\d]*(\d+(?:\s*(?:и|,|и)\s*\d+)*)/);
+  const agesInline =
+    t.match(/дет[^\d]*(\d+(?:\s*(?:и|,|and)\s*\d+)*)/) ||
+    t.match(/(?:child|children|kids?)[^\d]*(\d+(?:\s*(?:и|,|and)\s*\d+)*)/i);
   if (agesInline) {
-    const ages = parseKidsAges(agesInline[1], 10);
-    if (ages?.length) patch.kids_ages = ages;
+    const expectedKids = patch.kids || existing.kids || '0';
+    const ages = parseKidsAges(agesInline[1], parseInt(expectedKids, 10) || 10);
+    if (ages?.length) {
+      patch.kids_ages = ages;
+      if (!patch.kids && ages.length > 0) patch.kids = String(ages.length);
+    }
   }
 
   const dateMatch = t.match(/(\d{1,2})\s*(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)/);
@@ -406,6 +471,20 @@ function extractFromUserText(text, existing = {}, nextField = null) {
       patch.search_intent = 'package';
       patch.search_type = 'package';
     }
+  } else {
+  const inDestMatch = t.match(/\bв\s+([а-яёa-z\-\s]{3,30}?)(?:[?.!,]|$|\s+(?:на|с|и|или|без))/i);
+  if (inDestMatch && !patch.to_country && !patch.hotel_name) {
+    const destChunk = inDestMatch[1].trim();
+    const monthLike = /^(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)/i.test(
+      destChunk,
+    );
+    if (!monthLike && applyDestinationFromText(destChunk, patch)) {
+      if (!existing.search_intent && !patch.search_intent) {
+        patch.search_intent = 'package';
+        patch.search_type = 'package';
+      }
+    }
+  }
   }
 
   const toCityMatch = t.match(/(?:поехать|лететь|полет|fly|go|хочу)\s+(?:в|vo|to)\s+([а-яёa-z\-\s]{3,30})/i);

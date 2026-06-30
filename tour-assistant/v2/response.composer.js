@@ -1,6 +1,13 @@
 const META_PHRASES =
   /^(я\s+)?(сейчас\s+)?(ищу|подбираю|нахожу|looking|searching|let me|i will|сейчас ищу|начинаю поиск)/i;
 
+const {
+  formatDestinationSummary,
+  formatDestinationInPhrase,
+  formatDestinationPoPhrase,
+  isHotelSearch: isHotelDestinationSearch,
+} = require('./destination.labels');
+
 function stripMetaLanguage(text) {
   if (!text || typeof text !== 'string') return '';
   let clean = text.trim();
@@ -16,10 +23,10 @@ function stripMetaLanguage(text) {
 }
 
 function getDestinationLabel(params) {
-  if (params.hotel_name) return params.hotel_name;
-  if (params.to_city) return params.to_city;
-  if (params.to_country) return params.to_country;
-  return '';
+  if (isHotelDestinationSearch(params) && params.hotel_name) {
+    return String(params.hotel_name).trim();
+  }
+  return formatDestinationSummary(params);
 }
 
 function isPackageSearch(params) {
@@ -40,9 +47,7 @@ function pluralizeRu(count, forms) {
 }
 
 function getSearchDestinationLabel(params) {
-  if (params.to_city) return params.to_city;
-  if (params.to_country) return params.to_country;
-  return '';
+  return formatDestinationInPhrase(params);
 }
 
 function composeResultsCountMessage(params, count, { isPagination = false } = {}) {
@@ -120,7 +125,7 @@ function composeResultsIntro(params, hotels, { isPagination = false, isHotelSear
 }
 
 function composeNoResultsAdvice(params, { triedRelaxed = false } = {}) {
-  const dest = getDestinationLabel(params) || 'этом направлении';
+  const dest = formatDestinationPoPhrase(params);
   const lines = [
     `К сожалению, по ${dest} сейчас нет подходящих туров.`,
   ];

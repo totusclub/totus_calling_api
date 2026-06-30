@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { DEEPSEEK_API_KEY, DEEPSEEK_API_URL } = require('./config');
+const { formatDestinationSummary, formatDestinationInPhrase } = require('./destination.labels');
 const { stripMetaLanguage } = require('./response.composer');
 const { summarizeKnownParams } = require('./conversation.state');
 
@@ -21,20 +22,21 @@ function getDestinationContext(params) {
     return {
       label: String(p.hotel_name).trim(),
       kind: 'hotel',
-      city: p.to_city || '',
-      country: p.to_country || '',
+      city: p.to_city ? formatDestinationSummary({ to_city: p.to_city }) : '',
+      country: p.to_country ? formatDestinationSummary({ to_country: p.to_country }) : '',
     };
   }
+  const destLabel = formatDestinationSummary(p);
   if (p.to_city && String(p.to_city).trim()) {
     return {
-      label: String(p.to_city).trim(),
+      label: destLabel || String(p.to_city).trim(),
       kind: 'city',
-      country: p.to_country || '',
+      country: p.to_country ? formatDestinationSummary({ to_country: p.to_country }) : '',
     };
   }
   if (p.to_country && String(p.to_country).trim()) {
     return {
-      label: String(p.to_country).trim(),
+      label: destLabel || formatDestinationSummary({ to_country: p.to_country }),
       kind: 'country',
     };
   }
@@ -110,7 +112,7 @@ async function generateDestinationActivitiesAnswer(userText, conversation, known
     console.warn('[V2 destination.info] AI answer failed:', err.message);
   }
 
-  const name = destination.label;
+  const name = formatDestinationInPhrase(knownParams) || destination.label;
   return [
     `В ${name} обычно стоит обратить внимание на несколько форматов отдыха:`,
     '1. Пляжный отдых и водные активности',
