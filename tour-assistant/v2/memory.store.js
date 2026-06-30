@@ -19,6 +19,7 @@ const DEFAULT_SEARCH_PARAMS = {
   filter_price_max: '',
   filter_meals: '',
   filter_stars: '',
+  filter_rating_min: '',
   destination_label: '',
   destination_label_prep: '',
   page_number: 1,

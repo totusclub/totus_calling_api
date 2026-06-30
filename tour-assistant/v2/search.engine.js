@@ -4,26 +4,31 @@ const { createAssistantMessage } = require('./dto/messages');
 const { composeResultsText } = require('./response.composer');
 const memory = require('./memory.store');
 
-async function executeSearch(conversation, { isPagination = false } = {}) {
+async function executeSearch(conversation, { isPagination = false, excludeHotelIds = [] } = {}) {
   conversation.searchParams = prepareSearchParams(conversation.searchParams);
   conversation.stage = ConversationStage.SEARCHING;
   memory.saveConversation(conversation);
 
   try {
-    const { hotels, triedRelaxed } = await hotelSearch.runHotelSearch(
+    const { hotels, triedRelaxed, budgetExceeded, ratingMinExceeded, ratingFallback } =
+      await hotelSearch.runHotelSearch(
       conversation,
       conversation.searchParams,
-      { isPagination },
+      { isPagination, excludeHotelIds },
     );
 
     const isHotelSearch =
-      conversation.searchParams?.search_type === 'hotel' ||
-      (conversation.searchParams?.hotel_ids?.length > 0);
+      !conversation.searchParams?.filter_rating_min &&
+      (conversation.searchParams?.search_type === 'hotel' ||
+        (conversation.searchParams?.hotel_ids?.length > 0));
 
     const content = composeResultsText(conversation.searchParams, hotels, {
       isPagination,
       isHotelSearch,
       triedRelaxed,
+      budgetExceeded,
+      ratingMinExceeded,
+      ratingFallback,
     });
 
     const resultsMsg = createAssistantMessage({

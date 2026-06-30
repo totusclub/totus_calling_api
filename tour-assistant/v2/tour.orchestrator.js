@@ -12,6 +12,7 @@ const {
   userAsksHotelComparison,
   isPostSearchAdvisoryText,
   getLastShownHotels,
+  getAllShownHotelIds,
   searchFiltersChanged,
   buildSearchFingerprint,
   summarizeKnownParams,
@@ -98,6 +99,16 @@ function buildApiPayload(conversation) {
 
 async function resolveHotelNames(conversation) {
   const params = conversation.searchParams || {};
+  if (params.filter_rating_min) {
+    const cleared = mergeSearchParams(params, {
+      hotel_name: '',
+      hotel_ids: [],
+      search_intent: 'package',
+      search_type: 'package',
+    });
+    conversation.searchParams = cleared;
+    return cleared;
+  }
   if (!params.hotel_name || params.hotel_ids?.length) return params;
   if (params.search_intent === 'package' || params.search_type === 'package') {
     const cleared = { ...params };
@@ -314,14 +325,16 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
   }
 
   const session = conversation.searchSession || {};
+  const wantsMore = userWantsMoreHotelsAfterResults(userText);
   if (
-    userWantsMoreHotelsAfterResults(userText) &&
+    wantsMore &&
     session.requestId &&
-    conversation.stage === ConversationStage.RESULTS
+    (conversation.stage === ConversationStage.RESULTS || conversation.lastSearchFingerprint)
   ) {
-    const nextPage = (params.page_number || 1) + 1;
+    const excludeHotelIds = getAllShownHotelIds(conversation);
+    const nextPage = (session.currentPage || params.page_number || 1) + 1;
     conversation.searchParams = mergeSearchParams(params, { page_number: nextPage });
-    await executeSearch(conversation, { isPagination: true });
+    await executeSearch(conversation, { isPagination: true, excludeHotelIds });
     memory.saveConversation(conversation);
     const payload = buildApiPayload(conversation);
     if (onChunk) onChunk({ event: 'final_message', data: payload });
@@ -338,7 +351,7 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
       conversation.searchFailed ||
       conversation.lastSearchFingerprint;
 
-    if (alreadySearched && inResultsStage && !wantsRetry && !filtersChanged) {
+    if (alreadySearched && inResultsStage && !wantsRetry && !filtersChanged && !wantsMore) {
       const reply = userAsksWhyNoResults(userText)
         ? buildPostSearchReply(conversation, userText, params)
         : await generatePostSearchReply(userText, conversation, params);
@@ -358,8 +371,13 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
         readyOperators: [],
         currentPage: 0,
       };
+      conversation.shownHotelIds = [];
       if (justReceived.filter_stars) {
         conversation.searchParams.filter_stars = justReceived.filter_stars;
+      }
+      if (justReceived.filter_rating_min) {
+        conversation.searchParams.filter_rating_min = justReceived.filter_rating_min;
+        conversation.searchParams.sort_by = 'rating,desc';
       }
     }
 

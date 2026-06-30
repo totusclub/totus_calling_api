@@ -27,12 +27,13 @@ function getMealLabel(mealId, mealTypes = []) {
 /**
  * Find cheapest room offer from hotels-rooms response.
  */
-function findCheapestRoomOffer(roomsData, { startDate, nights } = {}) {
+function findCheapestRoomOffer(roomsData, { startDate, nights, maxPrice } = {}) {
   const rooms = roomsData?.result || roomsData || [];
   if (!Array.isArray(rooms) || !rooms.length) return null;
 
   const targetDate = normalizeDate(startDate);
   const targetNights = nights ? Number(nights) : null;
+  const priceCap = maxPrice ? Number(maxPrice) : null;
 
   let best = null;
   let fallback = null;
@@ -47,10 +48,13 @@ function findCheapestRoomOffer(roomsData, { startDate, nights } = {}) {
 
       for (const offer of offers) {
         if (!offer?.price) continue;
+        const price = Number(offer.price);
+        if (priceCap && price > priceCap) continue;
+
         const candidate = {
           room_type: roomType,
           meal_type: mealType,
-          price: Number(offer.price),
+          price,
           nights_count: offer.nights_count,
           start_date: offer.start_date,
         };

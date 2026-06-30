@@ -218,6 +218,19 @@ function getLastShownHotels(conversation) {
   return conversation?.results?.hotels || [];
 }
 
+function getAllShownHotelIds(conversation) {
+  const ids = new Set();
+  for (const m of conversation?.messages || []) {
+    if (m.role !== 'assistant' || !Array.isArray(m.hotels)) continue;
+    for (const hotel of m.hotels) {
+      const data = hotel.hotel || hotel;
+      const id = data.id || hotel.id;
+      if (id) ids.add(String(id));
+    }
+  }
+  return [...ids];
+}
+
 function userWantsRetrySearch(text) {
   const t = (text || '').toLowerCase().trim();
   if (isPostSearchAdvisoryText(text) || userAsksHotelComparison(text)) return false;
@@ -287,11 +300,13 @@ function buildSearchFingerprint(params) {
     filter_price_max: p.filter_price_max,
     filter_meals: p.filter_meals,
     filter_stars: p.filter_stars,
+    filter_rating_min: p.filter_rating_min,
   });
 }
 
 const SEARCH_FILTER_KEYS = [
   'filter_stars',
+  'filter_rating_min',
   'filter_meals',
   'filter_price_max',
   'filter_line',
@@ -318,7 +333,7 @@ function userWantsMoreResults(text) {
     /\bдальше\b/,
     /\bпредлагай\b/,
     /покажи\s+(ещё|еще|друг|больше)/,
-    /покаж(и|ите)\s+(ещё|еще|друг|больше)/,
+    /покаж(и|ите)\s+(ещё|еще|друг|больше|другие)/,
     /дай\s+(ещё|еще|друг|больше)/,
     /найди\s+(ещё|еще|друг|больше)/,
     /поищи\s+(ещё|еще|друг|больше)/,
@@ -326,7 +341,12 @@ function userWantsMoreResults(text) {
     /(ещё|еще)\s+(отел|тур|вариант|предлож)/,
     /(друг(ие|ой|ая|ое)\s+(отел|тур|вариант))/,
     /(хочу|можно|нужно)\s+(ещё|еще|друг|больше)/,
-    /more\s+hotel|similar\s+hotel/i,
+    /other\s+tour|other\s+hotel|more\s+tour|more\s+hotel|another\s+tour|another\s+hotel/i,
+    /другие\s+(тур|вариант|отел|предлож)/,
+    /еще\s+вариант|ещё\s+вариант/,
+    /покажи\s+другие/,
+    /предложи\s+другие/,
+    /more\s+options/i,
   ];
 
   return simpleMorePatterns.some((re) => re.test(t));
@@ -389,6 +409,9 @@ function summarizeKnownParams(searchParams) {
   }
   if (p.filter_meals) parts.push(`питание: ${formatMealsLabel(p.filter_meals)}`);
   if (p.filter_stars) parts.push(`звёзды: ${p.filter_stars}`);
+  if (p.filter_rating_min) {
+    parts.push(`рейтинг от ${Number(p.filter_rating_min).toFixed(1)}`);
+  }
   return parts;
 }
 
@@ -415,6 +438,7 @@ module.exports = {
   userAsksHotelComparison,
   isPostSearchAdvisoryText,
   getLastShownHotels,
+  getAllShownHotelIds,
   userAsksWhyNoResults,
   userAsksDestinationActivities,
   buildSearchFingerprint,

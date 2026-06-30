@@ -281,7 +281,7 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
                 });
                 
                 // Merge any new filter params that AI might have returned (but don't override existing ones)
-                const filterFields = ['filter_price_min', 'filter_price_max', 'filter_stars', 'filter_meals', 
+                const filterFields = ['filter_price_min', 'filter_price_max', 'filter_stars', 'filter_rating_min', 'filter_meals', 
                     'filter_instant_confirm', 'filter_regions', 'filter_line', 'filter_operators', 'filter_hotel_type', 'filter_beach_surface'];
                 for (const field of filterFields) {
                     if (parsed.searchParams[field] !== undefined && parsed.searchParams[field] !== null && parsed.searchParams[field] !== '') {
@@ -322,7 +322,7 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
             // For pagination: preserve all filter params from current search
             if (isPagination) {
                 console.log('[Backend] Preserving all params for pagination...');
-                const filterFields = ['filter_price_min', 'filter_price_max', 'filter_stars', 'filter_meals', 
+                const filterFields = ['filter_price_min', 'filter_price_max', 'filter_stars', 'filter_rating_min', 'filter_meals', 
                     'filter_instant_confirm', 'filter_regions', 'filter_line', 'filter_operators', 'filter_hotel_type', 'filter_beach_surface'];
                 for (const field of filterFields) {
                     if (currentSearchParams[field] !== undefined && mergedParams[field] === undefined) {

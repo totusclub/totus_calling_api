@@ -250,11 +250,57 @@ function mapStarFilter(text) {
   return null;
 }
 
+/** Guest review score (0–10), not hotel star category. */
+function mapRatingFilter(text) {
+  const t = (text || '').toLowerCase().replace(/ё/g, 'е');
+  const hasRatingContext = /рейтинг|rating|оценк/i.test(t);
+  if (!hasRatingContext) return null;
+
+  const patterns = [
+    /рейтинг(?:ом)?\s*(?:от|выше|не\s*ниже|>=?)?\s*(\d+(?:[.,]\d+)?)/,
+    /(?:с\s+)?рейтинг(?:ом)?\s*(\d+(?:[.,]\d+)?)/,
+    /(\d+(?:[.,]\d+)?)\s*\+?\s*(?:рейтинг|rating)/,
+    /\brating\s*(?:at\s*least|from|of)?\s*(\d+(?:[.,]\d+)?)/i,
+    /rating\s*(?:>=?|above)\s*(\d+(?:[.,]\d+)?)/i,
+  ];
+
+  for (const re of patterns) {
+    const m = t.match(re);
+    if (m) {
+      const val = parseFloat(String(m[1]).replace(',', '.'));
+      if (Number.isFinite(val) && val > 0 && val <= 10) {
+        return String(val);
+      }
+    }
+  }
+  return null;
+}
+
 function parseKidsAges(text, expectedCount) {
   const nums = (text || '').match(/\d{1,2}/g);
   if (!nums?.length) return null;
   const ages = nums.slice(0, expectedCount).map((n) => String(parseInt(n, 10)));
   return ages.length === expectedCount ? ages : ages.length > 0 ? ages : null;
+}
+
+/** Parse budget: 200000, 200 тыс, 200к, до 200 000 руб */
+function parseBudgetAmount(text) {
+  const raw = (text || '').trim();
+  if (!raw) return null;
+  const compact = raw.toLowerCase().replace(/\s+/g, '');
+
+  const thousandMatch = compact.match(/(\d+)\s*(?:тыс|тр|т\.р|к|k)(?:\.?(?:руб|₽|rub))?/);
+  if (thousandMatch) {
+    return String(parseInt(thousandMatch[1], 10) * 1000);
+  }
+
+  const plainMatch = raw.match(/(\d[\d\s]{2,})/);
+  if (plainMatch) {
+    const digits = plainMatch[1].replace(/\s/g, '');
+    if (digits.length >= 4) return digits;
+  }
+
+  return null;
 }
 
 function mergeSearchParams(base, patch) {
@@ -326,8 +372,17 @@ function extractFilterOnlyPatch(text) {
   if (meals) patch.filter_meals = meals;
   const stars = mapStarFilter(text);
   if (stars) patch.filter_stars = stars;
-  const budgetMatch = (text || '').match(/(\d{4,})\s*(руб|₽|rub|тыс|т\.р\.|тр)?/i);
-  if (budgetMatch) patch.filter_price_max = budgetMatch[1];
+  const ratingMin = mapRatingFilter(text);
+  if (ratingMin) {
+    patch.filter_rating_min = ratingMin;
+    patch.sort_by = 'rating,desc';
+    patch.hotel_name = '';
+    patch.hotel_ids = [];
+    patch.search_intent = 'package';
+    patch.search_type = 'package';
+  }
+  const budget = parseBudgetAmount(text);
+  if (budget) patch.filter_price_max = budget;
   return patch;
 }
 
@@ -393,8 +448,8 @@ function extractFromUserText(text, existing = {}, nextField = null) {
     if (ages?.length) patch.kids_ages = ages;
   }
   if (nextField === 'filter_price_max') {
-    const num = trimmed.replace(/\s/g, '').match(/(\d{4,})/);
-    if (num) patch.filter_price_max = num[1];
+    const budget = parseBudgetAmount(text);
+    if (budget) patch.filter_price_max = budget;
   }
   if (nextField === 'filter_meals') {
     const meals = mapMealPreference(text);
@@ -408,14 +463,24 @@ function extractFromUserText(text, existing = {}, nextField = null) {
   if (adultsMatch) patch.adults = adultsMatch[1];
   if (/^я\s+(один|одна|одного)$/i.test(trimmed)) patch.adults = '1';
 
-  const budgetMatch = t.match(/(\d{4,})\s*(руб|₽|rub|тыс|т\.р\.|тр)?/i);
-  if (budgetMatch) patch.filter_price_max = budgetMatch[1];
+  const budget = parseBudgetAmount(text);
+  if (budget) patch.filter_price_max = budget;
 
   const meals = mapMealPreference(text);
   if (meals) patch.filter_meals = meals;
 
   const stars = mapStarFilter(text);
   if (stars) patch.filter_stars = stars;
+
+  const ratingMin = mapRatingFilter(text);
+  if (ratingMin) {
+    patch.filter_rating_min = ratingMin;
+    patch.sort_by = 'rating,desc';
+    patch.hotel_name = '';
+    patch.hotel_ids = [];
+    patch.search_intent = 'package';
+    patch.search_type = 'package';
+  }
 
   const kidsCountMatch =
     t.match(/(\d+)\s*(?:дет|ребён|ребен|child|children|childe|kids?)\b/) ||
@@ -518,6 +583,7 @@ function extractFromUserText(text, existing = {}, nextField = null) {
 
   if (
     hotelName &&
+    !/рейтинг|rating|оценк/i.test(hotelName) &&
     !existing.hotel_name &&
     intent === 'hotel' &&
     (explicitHotel || nextField === 'hotel_resolve' || nextField === 'destination')
@@ -616,6 +682,12 @@ function applyExtraction(conversation, userText, aiResponse, nextField = null) {
   const { isCountryPlaceholderToCity } = require('./search.params.normalizer');
   if (params.to_city && isCountryPlaceholderToCity(params.to_city, params.to_country)) {
     delete params.to_city;
+  }
+  if (params.filter_rating_min) {
+    params.hotel_name = '';
+    params.hotel_ids = [];
+    params.search_type = 'package';
+    params.search_intent = 'package';
   }
   conversation.searchParams = params;
   return params;

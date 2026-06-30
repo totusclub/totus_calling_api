@@ -19,11 +19,14 @@ function extractHotelNameFromText(text) {
   const raw = (text || '').trim();
   if (!raw) return null;
 
+  // «ищу отели с рейтингом 10» — фильтр по рейтингу, не название отеля
+  if (/рейтинг|rating|оценк/i.test(raw) && /отел/i.test(raw)) return null;
+
   // "хочу поехать в Анталию" — направление, не отель
   if (/хочу\s+(поехать|отдохнуть|тур|вылет)/i.test(raw)) return null;
 
   const patterns = [
-    /(?:покажи|найди|show me|find|ищу)\s+(?:мне\s+)?(?:отель\s+)?(.+)/i,
+    /(?:покажи|найди|найти|show me|find|ищу)\s+(?:мне\s+)?(?:отель\s+)?(.+)/i,
     /(?:хочу|нужен|интересует)\s+(?:мне\s+)?отель\s+(.+)/i,
     /(?:отель|hotel)\s+(.+)/i,
   ];
@@ -32,6 +35,7 @@ function extractHotelNameFromText(text) {
     const match = raw.match(pattern);
     if (match?.[1]) {
       const name = match[1].trim().replace(/[.!?]+$/, '');
+      if (/рейтинг|rating|оценк/i.test(name)) continue;
       if (name.length >= 3 && !TRAVEL_PHRASE.test(name)) return name;
     }
   }

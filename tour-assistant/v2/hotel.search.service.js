@@ -39,6 +39,43 @@ function hotelKey(hotel) {
   return String(data.id || hotel.id || '');
 }
 
+function getEffectiveHotelPrice(hotel) {
+  const data = hotel.hotel || hotel;
+  const price = hotel.room_price ?? hotel.min_price ?? data.min_price;
+  const n = Number(price);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function getHotelRating(hotel) {
+  const data = hotel.hotel || hotel;
+  const n = Number(data.rating ?? hotel.rating);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function applyRatingMinFilter(hotels, filterRatingMin) {
+  const min = Number(filterRatingMin);
+  if (!Number.isFinite(min) || min <= 0) return hotels || [];
+  return (hotels || []).filter((hotel) => getHotelRating(hotel) >= min - 0.05);
+}
+
+function applyPriceMaxFilter(hotels, filterPriceMax) {
+  const cap = Number(filterPriceMax);
+  if (!Number.isFinite(cap) || cap <= 0) return hotels || [];
+  return (hotels || []).filter((hotel) => {
+    const price = getEffectiveHotelPrice(hotel);
+    return price !== null && price <= cap;
+  });
+}
+
+function excludeHotelsById(hotels, excludeIds = []) {
+  if (!excludeIds?.length) return hotels || [];
+  const blocked = new Set(excludeIds.map(String));
+  return (hotels || []).filter((hotel) => {
+    const key = hotelKey(hotel);
+    return key && !blocked.has(key);
+  });
+}
+
 async function startSearch(searchParams) {
   const normalized = normalizeSearchParamsForApi(searchParams);
   const clean = {};
@@ -138,6 +175,7 @@ async function getGroupedHotels({ requestId, readyOperators, filterParams }) {
   try {
     console.log('[V2 hotel.search] grouped-hotels params:', {
       filter_stars: params.filter_stars,
+      filter_price_max: params.filter_price_max,
       page_number: params.page_number,
       page_limit: params.page_limit,
     });
@@ -200,10 +238,12 @@ async function getGroupedHotelsWithStarFilter({
 }
 
 function buildFilterParams(searchParams) {
+  const ratingMin = Number(searchParams.filter_rating_min);
+  const hasRatingFilter = Number.isFinite(ratingMin) && ratingMin > 0;
   const filterParams = {
     page_number: searchParams.page_number || 1,
     page_limit: searchParams.page_limit || 3,
-    sort_by: searchParams.sort_by || 'relevance',
+    sort_by: searchParams.sort_by || (hasRatingFilter ? 'rating,desc' : 'relevance'),
     filter_price_min: searchParams.filter_price_min ?? 0,
     filter_instant_confirm: searchParams.filter_instant_confirm ?? false,
     filter_stars: searchParams.filter_stars || '3,4,5',
@@ -268,6 +308,7 @@ async function fetchHotelRoomOffer(requestId, hotelId, searchParams) {
     return findCheapestRoomOffer(res.data, {
       startDate: searchParams.start_date,
       nights: searchParams.nights,
+      maxPrice: searchParams.filter_price_max,
     });
   } catch (err) {
     console.warn('[V2 hotel.search] hotels-rooms failed for', hotelId, err.message);
@@ -276,20 +317,82 @@ async function fetchHotelRoomOffer(requestId, hotelId, searchParams) {
 }
 
 async function enrichHotelsWithRoomOffers(hotels, requestId, searchParams) {
-  const tasks = hotels.map(async (hotel) => {
+  const cap = Number(searchParams.filter_price_max);
+  const hasCap = Number.isFinite(cap) && cap > 0;
+
+  const tasks = (hotels || []).map(async (hotel) => {
     const data = hotel.hotel || hotel;
     const hotelId = data.id || hotel.id;
+    const listPrice = getEffectiveHotelPrice(hotel);
+    if (hasCap && listPrice !== null && listPrice > cap) {
+      return null;
+    }
+
     const roomOffer = await fetchHotelRoomOffer(requestId, hotelId, searchParams);
+    if (hasCap && roomOffer?.price && Number(roomOffer.price) > cap) {
+      return null;
+    }
+    if (!roomOffer && hasCap && listPrice === null) {
+      return null;
+    }
+
     return enrichHotelForClient(hotel, roomOffer);
   });
-  return Promise.all(tasks);
+
+  const enriched = await Promise.all(tasks);
+  return enriched.filter(Boolean);
 }
 
-async function tryRelaxedSearch(conversation, searchParams) {
+async function collectHotelsFromPages({
+  requestId,
+  readyOperators,
+  filterParams,
+  searchParams = {},
+  excludeHotelIds = [],
+  startPage = 1,
+  maxPages = 8,
+}) {
+  const pageLimit = filterParams.page_limit || 3;
+  const ratingMin = searchParams.filter_rating_min;
+  const hasRatingFilter = Number(ratingMin) > 0;
+  const collected = [];
+  const seen = new Set((excludeHotelIds || []).map(String));
+  let lastPage = startPage;
+  const scanPages = hasRatingFilter ? Math.max(maxPages, 15) : maxPages;
+
+  for (let page = startPage; page < startPage + scanPages; page++) {
+    const batch = await getGroupedHotelsWithStarFilter({
+      requestId,
+      readyOperators,
+      filterParams: { ...filterParams, page_number: page },
+    });
+
+    lastPage = page;
+    if (!batch.length) break;
+
+    const candidates = hasRatingFilter
+      ? applyRatingMinFilter(batch, ratingMin)
+      : batch;
+
+    for (const hotel of candidates) {
+      const key = hotelKey(hotel);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      collected.push(hotel);
+      if (collected.length >= pageLimit) {
+        return { hotels: collected, lastPage };
+      }
+    }
+  }
+
+  return { hotels: collected, lastPage };
+}
+
+async function tryRelaxedSearch(conversation, searchParams, { excludeHotelIds = [] } = {}) {
   const relaxed = { ...searchParams };
-  delete relaxed.filter_price_max;
-  relaxed.flex_dates = 4;
+  relaxed.flex_dates = Math.max(Number(relaxed.flex_dates) || 2, 4);
   relaxed.page_number = 1;
+  // Keep filter_price_max — never show tours above the user's budget.
 
   const requestId = await startSearch(relaxed);
   if (!requestId) return { hotels: [], triedRelaxed: true };
@@ -298,68 +401,145 @@ async function tryRelaxedSearch(conversation, searchParams) {
   if (!readyOperators.length) return { hotels: [], triedRelaxed: true };
 
   const filterParams = buildFilterParams(relaxed);
-  const hotels = await getGroupedHotelsWithStarFilter({
+  const { hotels } = await collectHotelsFromPages({
     requestId,
     readyOperators,
     filterParams: { ...filterParams, page_number: 1 },
+    searchParams: relaxed,
+    excludeHotelIds,
+    startPage: 1,
+    maxPages: 6,
   });
 
-  if (hotels.length) {
+  let enriched = await enrichHotelsWithRoomOffers(hotels, requestId, relaxed);
+  enriched = applyPriceMaxFilter(enriched, relaxed.filter_price_max);
+  enriched = applyRatingMinFilter(enriched, relaxed.filter_rating_min);
+
+  if (enriched.length) {
     conversation.searchSession = { requestId, readyOperators, currentPage: 1 };
-    conversation.searchParams = relaxed;
+    conversation.searchParams = { ...relaxed, page_number: 1 };
   }
 
-  const enriched = await enrichHotelsWithRoomOffers(hotels, requestId, relaxed);
   return { hotels: enriched, triedRelaxed: true };
 }
 
-async function runHotelSearch(conversation, searchParams, { isPagination } = {}) {
+async function tryBestRatingFallback(
+  conversation,
+  searchParams,
+  { requestId, readyOperators, excludeHotelIds = [] } = {},
+) {
+  const withoutRatingFilter = { ...searchParams, filter_rating_min: '', sort_by: 'rating,desc' };
+  const filterParams = buildFilterParams(withoutRatingFilter);
+
+  const { hotels } = await collectHotelsFromPages({
+    requestId,
+    readyOperators,
+    filterParams,
+    searchParams: {},
+    excludeHotelIds,
+    startPage: 1,
+    maxPages: 8,
+  });
+
+  let enriched = await enrichHotelsWithRoomOffers(hotels, requestId, searchParams);
+  enriched = applyPriceMaxFilter(enriched, searchParams.filter_price_max);
+  enriched.sort((a, b) => getHotelRating(b) - getHotelRating(a));
+  enriched = enriched.slice(0, searchParams.page_limit || 3);
+
+  if (enriched.length) {
+    conversation.searchSession = { requestId, readyOperators, currentPage: 1 };
+  }
+
+  return enriched;
+}
+
+async function runHotelSearch(
+  conversation,
+  searchParams,
+  { isPagination = false, excludeHotelIds = [] } = {},
+) {
   const session = conversation.searchSession || {};
   const filterParams = buildFilterParams(searchParams);
+  const priceCap = searchParams.filter_price_max;
+  const ratingMin = searchParams.filter_rating_min;
+
+  const finalizeHotels = async (hotels, requestId) => {
+    let enriched = await enrichHotelsWithRoomOffers(hotels, requestId, searchParams);
+    enriched = applyPriceMaxFilter(enriched, priceCap);
+    enriched = applyRatingMinFilter(enriched, ratingMin);
+    if (Number(ratingMin) > 0) {
+      enriched.sort((a, b) => getHotelRating(b) - getHotelRating(a));
+    }
+    return enriched;
+  };
 
   if (isPagination && session.requestId && session.readyOperators?.length) {
-    const hotels = await getGroupedHotelsWithStarFilter({
+    const startPage = filterParams.page_number || (session.currentPage || 1) + 1;
+    const { hotels, lastPage } = await collectHotelsFromPages({
       requestId: session.requestId,
       readyOperators: session.readyOperators,
       filterParams,
-    });
-    session.currentPage = filterParams.page_number;
-    conversation.searchSession = session;
-    const enriched = await enrichHotelsWithRoomOffers(
-      hotels,
-      session.requestId,
       searchParams,
-    );
+      excludeHotelIds,
+      startPage,
+      maxPages: 10,
+    });
+
+    session.currentPage = lastPage;
+    conversation.searchSession = session;
+    const enriched = await finalizeHotels(hotels, session.requestId);
     return { hotels: enriched, triedRelaxed: false };
   }
 
   const requestId = await startSearch(searchParams);
   if (!requestId) {
-    return tryRelaxedSearch(conversation, searchParams);
+    return tryRelaxedSearch(conversation, searchParams, { excludeHotelIds });
   }
 
   const readyOperators = await pollSearchStatus(requestId);
   if (!readyOperators.length) {
-    return tryRelaxedSearch(conversation, searchParams);
+    return tryRelaxedSearch(conversation, searchParams, { excludeHotelIds });
   }
 
-  const hotels = await getGroupedHotelsWithStarFilter({
+  const startPage = isPagination ? filterParams.page_number : 1;
+  const { hotels, lastPage } = await collectHotelsFromPages({
     requestId,
     readyOperators,
-    filterParams: { ...filterParams, page_number: isPagination ? filterParams.page_number : 1 },
+    filterParams,
+    searchParams,
+    excludeHotelIds,
+    startPage,
+    maxPages: isPagination ? 10 : 6,
   });
 
   conversation.searchSession = {
     requestId,
     readyOperators,
-    currentPage: isPagination ? filterParams.page_number : 1,
+    currentPage: lastPage,
   };
 
-  if (!hotels.length && !isPagination) {
-    return tryRelaxedSearch(conversation, searchParams);
+  let enriched = await finalizeHotels(hotels, requestId);
+
+  if (!enriched.length && !isPagination && priceCap) {
+    return { hotels: [], triedRelaxed: false, budgetExceeded: true };
   }
 
-  const enriched = await enrichHotelsWithRoomOffers(hotels, requestId, searchParams);
+  if (!enriched.length && !isPagination && Number(ratingMin) > 0) {
+    const fallbackHotels = await tryBestRatingFallback(conversation, searchParams, {
+      requestId,
+      readyOperators,
+      excludeHotelIds,
+    });
+    if (fallbackHotels.length) {
+      return { hotels: fallbackHotels, triedRelaxed: false, ratingFallback: true };
+    }
+    return { hotels: [], triedRelaxed: false, ratingMinExceeded: true };
+  }
+
+  if (!enriched.length && !isPagination) {
+    return tryRelaxedSearch(conversation, searchParams, { excludeHotelIds });
+  }
+
   return { hotels: enriched, triedRelaxed: false };
 }
 
@@ -370,4 +550,9 @@ module.exports = {
   enrichHotelsWithRoomOffers,
   applyStarsFilter,
   parseStarsFilter,
+  applyPriceMaxFilter,
+  applyRatingMinFilter,
+  getHotelRating,
+  getEffectiveHotelPrice,
+  hotelKey,
 };

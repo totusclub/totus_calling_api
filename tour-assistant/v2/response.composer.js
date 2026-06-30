@@ -68,6 +68,26 @@ function composeResultsCountMessage(params, count, { isPagination = false } = {}
   return `${prefix} ${count} ${label}${destPart}.`;
 }
 
+function composeRatingFilterResultMessage(params, count, { isPagination = false, ratingFallback = false } = {}) {
+  if (count <= 0) return null;
+
+  const requested = params.filter_rating_min
+    ? Number(params.filter_rating_min).toFixed(1)
+    : null;
+  const label = pluralizeRu(count, ['тур', 'тура', 'туров']);
+  const prefix = isPagination ? 'Нашёл ещё' : 'Нашёл';
+  const dest = getSearchDestinationLabel(params);
+  const destPart = dest ? ` в ${dest}` : '';
+
+  if (ratingFallback && requested) {
+    return `Точных отелей с рейтингом ${requested} не нашёл — показываю лучшие по рейтингу. ${prefix} ${count} ${label}${destPart}.`;
+  }
+  if (requested) {
+    return `${prefix} ${count} ${label} с рейтингом от ${requested}${destPart}.`;
+  }
+  return composeResultsCountMessage(params, count, { isPagination });
+}
+
 function composeHotelSearchResultMessage(params, hotels, { isPagination = false } = {}) {
   const count = hotels?.length || 0;
   if (count <= 0) return null;
@@ -87,8 +107,13 @@ function composeHotelSearchResultMessage(params, hotels, { isPagination = false 
   return `${prefix} ${count} ${label} по отелю ${name}.`;
 }
 
-function composeResultsIntro(params, hotels, { isPagination = false, isHotelSearch = false } = {}) {
+function composeResultsIntro(params, hotels, { isPagination = false, isHotelSearch = false, ratingFallback = false } = {}) {
   const count = hotels?.length || 0;
+  const hasRatingFilter = Number(params.filter_rating_min) > 0;
+
+  if (hasRatingFilter && count > 0) {
+    return composeRatingFilterResultMessage(params, count, { isPagination, ratingFallback });
+  }
 
   if (isPagination) {
     if (isHotelSearch && count > 0) {
@@ -124,8 +149,29 @@ function composeResultsIntro(params, hotels, { isPagination = false, isHotelSear
   return composeResultsCountMessage(params, count, { isPagination: false });
 }
 
-function composeNoResultsAdvice(params, { triedRelaxed = false } = {}) {
+function composeNoResultsAdvice(params, { triedRelaxed = false, budgetExceeded = false, ratingMinExceeded = false } = {}) {
   const dest = formatDestinationPoPhrase(params);
+  const budget = params.filter_price_max
+    ? Number(params.filter_price_max).toLocaleString('ru-RU')
+    : null;
+  const ratingMin = params.filter_rating_min
+    ? Number(params.filter_rating_min).toFixed(1)
+    : null;
+
+  if (budgetExceeded && budget) {
+    return [
+      `К сожалению, по ${dest} сейчас нет туров в пределах бюджета до ${budget} ₽.`,
+      'Могу сдвинуть даты, предложить соседний курорт или увеличить бюджет — что попробуем?',
+    ].join('\n');
+  }
+
+  if (ratingMinExceeded && ratingMin) {
+    return [
+      `К сожалению, по ${dest} сейчас нет туров с рейтингом от ${ratingMin}.`,
+      'Могу показать отели с рейтингом от 9.0 или ослабить другие фильтры — что попробуем?',
+    ].join('\n');
+  }
+
   const lines = [
     `К сожалению, по ${dest} сейчас нет подходящих туров.`,
   ];
@@ -172,6 +218,12 @@ function composeResultsText(params, hotels, options = {}) {
   const count = hotels?.length || 0;
 
   if (options.isPagination) {
+    if (Number(params.filter_rating_min) > 0) {
+      return composeRatingFilterResultMessage(params, count, {
+        isPagination: true,
+        ratingFallback: options.ratingFallback,
+      });
+    }
     return composeResultsCountMessage(params, count, { isPagination: true });
   }
 
