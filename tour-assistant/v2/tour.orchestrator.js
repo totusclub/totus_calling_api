@@ -66,40 +66,58 @@ function resetSearchSession(conversation) {
   conversation.searchParams = mergeSearchParams(conversation.searchParams || {}, { page_number: 1 });
 }
 
-async function runEscalatedSearch(conversation, onChunk) {
-  const params = conversation.searchParams || {};
-  const { patch, level, preface, exhausted } = applyEscalationStep(conversation, params);
+function removeLastAssistantMessage(conversation) {
+  const msgs = conversation?.messages;
+  if (!msgs?.length || msgs[msgs.length - 1].role !== 'assistant') return;
+  msgs.pop();
+}
 
-  if (exhausted) {
-    const reply = isLimitedPackageDestination(params)
-      ? composeLimitedCatalogAdvice(params)
-      : `По ${formatDestinationSummary(params) || 'этом направлении'} исчерпал стандартные варианты поиска. ` +
-        'Рекомендую начать новый чат (кнопка «+») и указать направление, даты и бюджет заново — ' +
-        'или попробуйте поиск на totus.club с теми же параметрами.';
-    const msg = createTextMessage({ role: 'assistant', content: reply });
-    conversation.messages.push(msg);
-    recordAssistantReply(conversation, reply);
-    conversation.meta.suggested_reset = true;
-    memory.saveConversation(conversation);
-    const payload = buildApiPayload(conversation);
-    if (onChunk) onChunk({ event: 'final_message', data: payload });
-    return payload;
-  }
-
-  conversation.searchParams = mergeSearchParams(params, patch);
-  conversation.searchParams = syncDestinationLabels(conversation.searchParams);
-  resetSearchSession(conversation);
-  conversation.stage = ConversationStage.READY_TO_SEARCH;
-  conversation.searchParams = prepareSearchParams(conversation.searchParams);
-  memory.saveConversation(conversation);
-
-  appendEpisodicEvent(conversation, { type: 'escalation', level, patch });
-
-  await executeSearch(conversation, { isPagination: false, escalationNote: preface });
-  const lastMsg = conversation.messages[conversation.messages.length - 1];
+async function searchWithAutoEscalation(conversation, onChunk) {
+  await executeSearch(conversation, { isPagination: false });
+  let lastMsg = conversation.messages[conversation.messages.length - 1];
   if (lastMsg?.role === 'assistant' && lastMsg.content) {
     recordAssistantReply(conversation, lastMsg.content);
   }
+
+  while (
+    getLastShownHotels(conversation).length === 0 &&
+    !conversation.searchFailed &&
+    (conversation.meta?.escalation_level || 0) < 4
+  ) {
+    removeLastAssistantMessage(conversation);
+    const params = conversation.searchParams || {};
+    const { patch, level, preface, exhausted } = applyEscalationStep(conversation, params);
+
+    if (exhausted) {
+      const reply = isLimitedPackageDestination(params)
+        ? composeLimitedCatalogAdvice(params)
+        : `По ${formatDestinationSummary(params) || 'этом направлении'} исчерпал стандартные варианты поиска. ` +
+          'Рекомендую начать новый чат (кнопка «+») и указать направление, даты и бюджет заново — ' +
+          'или попробуйте поиск на totus.club с теми же параметрами.';
+      const msg = createTextMessage({ role: 'assistant', content: reply });
+      conversation.messages.push(msg);
+      recordAssistantReply(conversation, reply);
+      conversation.meta.suggested_reset = true;
+      memory.saveConversation(conversation);
+      const payload = buildApiPayload(conversation);
+      if (onChunk) onChunk({ event: 'final_message', data: payload });
+      return payload;
+    }
+
+    conversation.searchParams = mergeSearchParams(params, patch);
+    conversation.searchParams = syncDestinationLabels(conversation.searchParams);
+    resetSearchSession(conversation);
+    conversation.stage = ConversationStage.READY_TO_SEARCH;
+    conversation.searchParams = prepareSearchParams(conversation.searchParams);
+    appendEpisodicEvent(conversation, { type: 'escalation', level, patch });
+
+    await executeSearch(conversation, { isPagination: false, escalationNote: preface });
+    lastMsg = conversation.messages[conversation.messages.length - 1];
+    if (lastMsg?.role === 'assistant' && lastMsg.content) {
+      recordAssistantReply(conversation, lastMsg.content);
+    }
+  }
+
   memory.saveConversation(conversation);
   const payload = buildApiPayload(conversation);
   if (onChunk) onChunk({ event: 'final_message', data: payload });
@@ -414,6 +432,16 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
     }
   }
 
+  if (justReceived.to_country || justReceived.to_city) {
+    const destChanged =
+      justReceived.to_country !== paramsBefore.to_country ||
+      justReceived.to_city !== paramsBefore.to_city;
+    if (destChanged) {
+      resetEscalation(conversation);
+      resetSearchSession(conversation);
+    }
+  }
+
   if (isAdvisoryTurn) {
     conversation.searchParams = mergeSearchParams(paramsAfter, {
       from_city: paramsBefore.from_city,
@@ -478,6 +506,14 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
     return pushAssistantReply(conversation, reply, onChunk);
   }
 
+  if (
+    intent.primary === 'WHY_NO_RESULTS' &&
+    conversation.meta?.last_search_outcome === 'no_results'
+  ) {
+    const reply = buildPostSearchReply(conversation, userText, params);
+    return pushAssistantReply(conversation, reply, onChunk);
+  }
+
   if (intent.rejectCurrent) {
     conversation.searchParams = clearDestinationParams(params);
     conversation.searchParams = sanitizeFromCity(
@@ -498,7 +534,7 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
 
   const forceEscalation = shouldForceEscalation(conversation);
   const forcesSearch =
-    intent.forcesSearch || forceEscalation || intent.primary === 'WHY_NO_RESULTS';
+    intent.forcesSearch || forceEscalation;
 
   if (isAdvisoryTurn) {
     const shownHotels = getLastShownHotels(conversation);
@@ -529,13 +565,19 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
   const wantsMore = userWantsMoreHotelsAfterResults(userText);
   if (
     wantsMore &&
-    session.requestId &&
     (conversation.stage === ConversationStage.RESULTS || conversation.lastSearchFingerprint)
   ) {
-    const excludeHotelIds = getAllShownHotelIds(conversation);
-    const nextPage = (session.currentPage || params.page_number || 1) + 1;
-    conversation.searchParams = mergeSearchParams(params, { page_number: nextPage });
-    await executeSearch(conversation, { isPagination: true, excludeHotelIds });
+    if (session.requestId) {
+      const excludeHotelIds = getAllShownHotelIds(conversation);
+      const nextPage = (session.currentPage || params.page_number || 1) + 1;
+      conversation.searchParams = mergeSearchParams(params, { page_number: nextPage });
+      await executeSearch(conversation, { isPagination: true, excludeHotelIds });
+    } else {
+      const excludeHotelIds = getAllShownHotelIds(conversation);
+      conversation.searchParams = mergeSearchParams(params, { page_number: 1 });
+      resetSearchSession(conversation);
+      await executeSearch(conversation, { isPagination: false, excludeHotelIds });
+    }
     memory.saveConversation(conversation);
     const payload = buildApiPayload(conversation);
     if (onChunk) onChunk({ event: 'final_message', data: payload });
@@ -548,7 +590,9 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
     const wantsRetry = userWantsRetrySearch(userText);
     const filtersChanged = searchFiltersChanged(justReceived);
     const retryAfterNoResults =
-      userAsksWhyNoResults(userText) && (conversation.searchFailed || shownCount === 0);
+      userAsksWhyNoResults(userText) &&
+      (conversation.searchFailed || shownCount === 0) &&
+      conversation.meta?.last_search_outcome !== 'no_results';
     const inResultsStage =
       conversation.stage === ConversationStage.RESULTS ||
       conversation.searchFailed ||
@@ -571,7 +615,7 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
 
       const verification = verifyBeforeSend(conversation, reply, { intent });
       if (!verification.ok && verification.shouldEscalate) {
-        return runEscalatedSearch(conversation, onChunk);
+        return searchWithAutoEscalation(conversation, onChunk);
       }
 
       return pushAssistantReply(conversation, reply, onChunk);
@@ -586,6 +630,7 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
       };
       conversation.shownHotelIds = [];
       if (justReceived.to_country || justReceived.to_city) {
+        resetEscalation(conversation);
         if (!justReceived.filter_price_max) {
           delete conversation.searchParams.filter_price_max;
         }
@@ -614,25 +659,10 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
     memory.saveConversation(conversation);
 
     if (forceEscalation && (conversation.meta?.escalation_level || 0) > 0) {
-      return runEscalatedSearch(conversation, onChunk);
+      return searchWithAutoEscalation(conversation, onChunk);
     }
 
-    await executeSearch(conversation, { isPagination: false });
-    const lastMsg = conversation.messages[conversation.messages.length - 1];
-    if (lastMsg?.role === 'assistant' && lastMsg.content) {
-      recordAssistantReply(conversation, lastMsg.content);
-    }
-    if (
-      getLastShownHotels(conversation).length === 0 &&
-      !conversation.searchFailed &&
-      (conversation.meta?.escalation_level || 0) < 4
-    ) {
-      return runEscalatedSearch(conversation, onChunk);
-    }
-    memory.saveConversation(conversation);
-    const payload = buildApiPayload(conversation);
-    if (onChunk) onChunk({ event: 'final_message', data: payload });
-    return payload;
+    return searchWithAutoEscalation(conversation, onChunk);
   }
 
   conversation.stage = resolveStage(params, conversation.stage);

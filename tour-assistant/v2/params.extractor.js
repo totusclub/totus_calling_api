@@ -36,6 +36,9 @@ const CITY_DESTINATION_ALIASES = {
   анталья: { country: 'TR', city: 'Antalya' },
   анталиа: { country: 'TR', city: 'Antalya' },
   анталия: { country: 'TR', city: 'Antalya' },
+  анталиу: { country: 'TR', city: 'Antalya' },
+  антител: { country: 'TR', city: 'Antalya' },
+  антитела: { country: 'TR', city: 'Antalya' },
   belek: { country: 'TR', city: 'Belek' },
   белек: { country: 'TR', city: 'Belek' },
   paris: { country: 'FR', city: 'Paris' },
@@ -56,7 +59,18 @@ const CITY_DESTINATION_ALIASES = {
   рим: { country: 'IT', city: 'Rome' },
 };
 
-/** Country-only — set to_country, leave to_city empty for country-wide search. */
+/** Default resort/city when user names only the country (API needs a city for packages). */
+const COUNTRY_DEFAULT_CITY = {
+  TH: 'Phuket',
+  EG: 'Hurghada',
+  VN: 'Nha Trang',
+  GR: 'Crete',
+  ES: 'Tenerife',
+  CY: 'Ayia Napa',
+  MV: 'Male',
+};
+
+/** Country-only — set to_country; default to_city when API requires a resort. */
 const COUNTRY_ONLY_ALIASES = {
   турция: 'TR',
   turkey: 'TR',
@@ -186,6 +200,9 @@ function applyDestinationFromText(text, patch) {
   const countryCode = matchCountryOnly(text);
   if (countryCode) {
     patch.to_country = countryCode;
+    if (COUNTRY_DEFAULT_CITY[countryCode]) {
+      patch.to_city = COUNTRY_DEFAULT_CITY[countryCode];
+    }
     return true;
   }
   return false;

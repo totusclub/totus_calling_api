@@ -134,8 +134,26 @@ function normalizeStartDate(dateStr) {
   return formatDateYmd(candidate);
 }
 
-function normalizeSearchParamsForApi(params = {}) {
+const COUNTRY_DEFAULT_CITY = {
+  TH: 'Phuket',
+  EG: 'Hurghada',
+  VN: 'Nha Trang',
+  GR: 'Crete',
+  ES: 'Tenerife',
+  CY: 'Ayia Napa',
+  MV: 'Male',
+};
+
+function applyCountryDefaultCity(params = {}) {
   const p = { ...params };
+  if (!p.to_country || p.to_city || p.hotel_ids?.length) return p;
+  const city = COUNTRY_DEFAULT_CITY[String(p.to_country).toUpperCase()];
+  if (city) p.to_city = city;
+  return p;
+}
+
+function normalizeSearchParamsForApi(params = {}) {
+  const p = applyCountryDefaultCity({ ...params });
 
   if (p.from_city) {
     p.from_city = normalizeFromCity(p.from_city);
@@ -169,4 +187,6 @@ module.exports = {
   normalizeStartDate,
   normalizeSearchParamsForApi,
   isCountryPlaceholderToCity,
+  applyCountryDefaultCity,
+  COUNTRY_DEFAULT_CITY,
 };
