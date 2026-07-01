@@ -59,18 +59,11 @@ const CITY_DESTINATION_ALIASES = {
   рим: { country: 'IT', city: 'Rome' },
 };
 
-/** Default resort/city when user names only the country (API needs a city for packages). */
-const COUNTRY_DEFAULT_CITY = {
-  TH: 'Phuket',
-  EG: 'Hurghada',
-  VN: 'Nha Trang',
-  GR: 'Crete',
-  ES: 'Tenerife',
-  CY: 'Ayia Napa',
-  MV: 'Male',
-};
-
-/** Country-only — set to_country; default to_city when API requires a resort. */
+const {
+  applyCountryDefaultCity,
+  matchCountryCodeFromText,
+  matchCityFromText,
+} = require('./destination.catalog');
 const COUNTRY_ONLY_ALIASES = {
   турция: 'TR',
   turkey: 'TR',
@@ -177,17 +170,11 @@ function textMentionsAlias(text, alias) {
 }
 
 function matchCityDestination(text) {
-  for (const [name, dest] of SORTED_CITY_ENTRIES) {
-    if (textMentionsAlias(text, name)) return dest;
-  }
-  return null;
+  return matchCityFromText(text);
 }
 
 function matchCountryOnly(text) {
-  for (const [name, code] of SORTED_COUNTRY_ENTRIES) {
-    if (textMentionsAlias(text, name)) return code;
-  }
-  return null;
+  return matchCountryCodeFromText(text);
 }
 
 function applyDestinationFromText(text, patch) {
@@ -200,9 +187,8 @@ function applyDestinationFromText(text, patch) {
   const countryCode = matchCountryOnly(text);
   if (countryCode) {
     patch.to_country = countryCode;
-    if (COUNTRY_DEFAULT_CITY[countryCode]) {
-      patch.to_city = COUNTRY_DEFAULT_CITY[countryCode];
-    }
+    const withCity = applyCountryDefaultCity({ to_country: countryCode });
+    if (withCity.to_city) patch.to_city = withCity.to_city;
     return true;
   }
   return false;
@@ -557,25 +543,37 @@ function extractFromUserText(text, existing = {}, nextField = null) {
     patch.start_date = `${dotDate[3]}-${dotDate[2].padStart(2, '0')}-${dotDate[1].padStart(2, '0')}`;
   }
 
-  if (applyDestinationFromText(text, patch)) {
-    if (!existing.search_intent && !patch.search_intent) {
-      patch.search_intent = 'package';
-      patch.search_type = 'package';
-    }
-  } else {
-  const inDestMatch = t.match(/\bв\s+([а-яёa-z\-\s]{3,30}?)(?:[?.!,]|$|\s+(?:на|с|и|или|без))/i);
-  if (inDestMatch && !patch.to_country && !patch.hotel_name) {
-    const destChunk = inDestMatch[1].trim();
-    const monthLike = /^(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)/i.test(
-      destChunk,
-    );
-    if (!monthLike && applyDestinationFromText(destChunk, patch)) {
+  const skipBareDestinationParse =
+    nextField === 'from_city' ||
+    nextField === 'start_date' ||
+    nextField === 'nights' ||
+    nextField === 'adults' ||
+    nextField === 'kids' ||
+    nextField === 'kids_ages' ||
+    nextField === 'filter_price_max' ||
+    nextField === 'filter_meals';
+
+  if (!skipBareDestinationParse) {
+    if (applyDestinationFromText(text, patch)) {
       if (!existing.search_intent && !patch.search_intent) {
         patch.search_intent = 'package';
         patch.search_type = 'package';
       }
+    } else {
+      const inDestMatch = t.match(/\bв\s+([а-яёa-z\-\s]{3,30}?)(?:[?.!,]|$|\s+(?:на|с|и|или|без))/i);
+      if (inDestMatch && !patch.to_country && !patch.hotel_name) {
+        const destChunk = inDestMatch[1].trim();
+        const monthLike = /^(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)/i.test(
+          destChunk,
+        );
+        if (!monthLike && applyDestinationFromText(destChunk, patch)) {
+          if (!existing.search_intent && !patch.search_intent) {
+            patch.search_intent = 'package';
+            patch.search_type = 'package';
+          }
+        }
+      }
     }
-  }
   }
 
   const toCityMatch = t.match(/(?:поехать|лететь|полет|fly|go|хочу)\s+(?:в|vo|to)\s+([а-яёa-z\-\s]{3,30})/i);
@@ -766,6 +764,31 @@ function extractFromAiResponse(aiResponse) {
   return {};
 }
 
+function stripAccidentalDepartureDestination(params, userText, nextField) {
+  const { isDepartureCityOnlyText } = require('./search.params.normalizer');
+  const { extractDestinationQuery } = require('./destination.resolver');
+  const hasExplicitDest = Boolean(extractDestinationQuery(userText));
+
+  if (nextField === 'from_city' && isDepartureCityOnlyText(userText) && !hasExplicitDest) {
+    delete params.to_country;
+    delete params.to_city;
+    delete params.destination_label;
+    delete params.destination_label_prep;
+  }
+
+  if (
+    params.to_country === 'RU' &&
+    params.to_city === 'Moscow' &&
+    params.from_city === 'Moscow' &&
+    !hasExplicitDest
+  ) {
+    delete params.to_country;
+    delete params.to_city;
+    delete params.destination_label;
+    delete params.destination_label_prep;
+  }
+}
+
 function applyExtraction(conversation, userText, aiResponse, nextField = null) {
   const previousParams = conversation.searchParams || {};
   let params = { ...previousParams };
@@ -775,6 +798,7 @@ function applyExtraction(conversation, userText, aiResponse, nextField = null) {
   // Local rules (regex / aliases) override AI extraction for the same fields.
   params = mergeSearchParams(params, aiPatch);
   params = mergeSearchParams(params, localPatch);
+  stripAccidentalDepartureDestination(params, userText, nextField);
   reconcileDestinationAfterExtraction(params, previousParams, userText, localPatch, aiPatch);
 
   const intent = params.search_intent || inferSearchIntentFromParams(params);

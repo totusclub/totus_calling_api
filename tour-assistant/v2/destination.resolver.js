@@ -1,6 +1,16 @@
 const axios = require('axios');
 const { TOTUS_API_BASE_URL } = require('./config');
+const { isDepartureCityOnlyText } = require('./search.params.normalizer');
 const { getCountryPrep, getCountryNom, getCityPrep, getCityNom } = require('./destination.labels');
+const {
+  COUNTRY_DEFAULT_CITY,
+  KNOWN_CITY_RESOLVES,
+  matchCountryCodeFromText,
+  matchCityFromText,
+  getDefaultCityForCountry,
+  canonicalizeApiCity,
+  normalizeKey,
+} = require('./destination.catalog');
 
 const api = axios.create({
   baseURL: TOTUS_API_BASE_URL,
@@ -10,32 +20,29 @@ const api = axios.create({
 const MONTH_LIKE =
   /^(январ|феврал|март|апрел|ма[йя]|июн|июл|августа|сентябр|октябр|ноябр|декабр)/i;
 
-/** Canonical API city names — checked before autocomplete (avoids Greece «Bali» vs Indonesia). */
-const KNOWN_CITY_RESOLVES = {
-  bali: { country: 'ID', city: 'Bali Island' },
-  бали: { country: 'ID', city: 'Bali Island' },
-  балли: { country: 'ID', city: 'Bali Island' },
-  'bali island': { country: 'ID', city: 'Bali Island' },
-  'о. бали': { country: 'ID', city: 'Bali Island' },
-};
-
 function resolveKnownCityQuery(query) {
-  const key = normalizeForMatch(query);
-  if (!key) return null;
-  const hit = KNOWN_CITY_RESOLVES[key];
+  const hit = matchCityFromText(query);
   if (!hit) return null;
   return buildPatchFromKnownCity(hit);
 }
 
 function buildPatchFromKnownCity({ country, city }) {
+  const canonicalCity = canonicalizeApiCity(city, country) || city;
   const countryRu = getCountryNom(country) || country;
-  const cityDisplay = getCityNom(city) || city;
-  const label = `${cityDisplay}, ${countryRu}`;
-  const prep = `${getCityPrep(city) || cityDisplay}, ${countryRu}`;
+  const cityDisplay = getCityNom(canonicalCity, country) || getCityNom(city, country);
+  const cityPrep = getCityPrep(canonicalCity, country) || getCityPrep(city, country);
+  const label =
+    cityDisplay && countryRu && cityDisplay !== countryRu
+      ? `${cityDisplay}, ${countryRu}`
+      : cityDisplay || countryRu;
+  const prep =
+    cityPrep && countryRu && cityPrep !== countryRu
+      ? `${cityPrep}, ${countryRu}`
+      : cityPrep || getCountryPrep(country) || label;
   return {
     kind: 'city',
     to_country: country,
-    to_city: city,
+    to_city: canonicalCity,
     destination_label: label,
     destination_label_prep: prep,
     search_intent: 'package',
@@ -43,9 +50,6 @@ function buildPatchFromKnownCity({ country, city }) {
   };
 }
 
-/**
- * Pull a destination phrase from free-form user text for autocomplete lookup.
- */
 function extractExplicitCityName(userText) {
   const raw = String(userText || '').trim();
   if (!raw) return '';
@@ -86,19 +90,35 @@ function extractDestinationQuery(userText) {
     if (chunk.length >= 2 && !MONTH_LIKE.test(chunk)) return chunk;
   }
 
+  if (isDepartureCityOnlyText(raw)) return '';
   return raw.length <= 48 ? raw : '';
 }
 
-function normalizeForMatch(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/ё/g, 'е')
-    .trim();
+function resolveKnownCountryQuery(query) {
+  const code = matchCountryCodeFromText(query);
+  if (!code) return null;
+  const defaultCity = getDefaultCityForCountry(code);
+  if (defaultCity) {
+    return buildPatchFromKnownCity({ country: code, city: defaultCity });
+  }
+  const label = getCountryNom(code) || code;
+  return {
+    kind: 'country',
+    to_country: code,
+    destination_label: label,
+    destination_label_prep: getCountryPrep(code) || label,
+    search_intent: 'package',
+    search_type: 'package',
+  };
+}
+
+function isCountryOnlyQuery(query) {
+  return Boolean(resolveKnownCountryQuery(query));
 }
 
 function mentionScore(query, candidate) {
-  const q = normalizeForMatch(query);
-  const c = normalizeForMatch(candidate);
+  const q = normalizeKey(query);
+  const c = normalizeKey(candidate);
   if (!q || !c) return 0;
   if (q === c) return 100;
   if (c.includes(q) || q.includes(c)) return 70;
@@ -129,6 +149,13 @@ function scoreResult(result, query, groupName) {
   else if (groupName === 'metaregions') score += 2;
   else if (groupName === 'countries') score += 4;
 
+  if (isCountryOnlyQuery(query) && groupName === 'countries') {
+    score += 50;
+  }
+  if (isCountryOnlyQuery(query) && groupName === 'regions') {
+    score -= 25;
+  }
+
   return score;
 }
 
@@ -138,19 +165,18 @@ function pickBestResult(groups, query) {
 
   let best = null;
   let bestScore = 0;
-  const q = normalizeForMatch(query);
+  const q = normalizeKey(query);
 
   for (const groupName of ['countries', 'regions', 'metaregions']) {
     const group = groups.find((g) => g.group_name === groupName);
     for (const result of group?.results || []) {
       if (!result?.iso2) continue;
       let score = scoreResult(result, query, groupName);
-      // Prefer Indonesia Bali Island over Greece Bali for «bali»/«бали» queries
       if (/^бал[ил]/i.test(q) || q === 'bali' || q === 'bali island') {
         if (result.iso2 === 'ID' && /bali/i.test(result.name_en || result.name || '')) {
           score += 40;
         }
-        if (result.iso2 === 'GR' && normalizeForMatch(result.name_en) === 'bali') {
+        if (result.iso2 === 'GR' && normalizeKey(result.name_en) === 'bali') {
           score -= 30;
         }
       }
@@ -173,6 +199,10 @@ function buildPatchFromResult(item) {
   const group = item._group;
 
   if (group === 'countries') {
+    const defaultCity = COUNTRY_DEFAULT_CITY[iso2];
+    if (defaultCity) {
+      return buildPatchFromKnownCity({ country: iso2, city: defaultCity });
+    }
     const label = getCountryNom(iso2) || item.name || item.country_name_ru || item.name_en || '';
     return {
       kind: 'country',
@@ -185,23 +215,23 @@ function buildPatchFromResult(item) {
   }
 
   const cityEn = item.name_en || item.name || item.city_name || '';
-  const cityRu = item.name || item.city_name || cityEn;
+  const canonicalCity = canonicalizeApiCity(cityEn, iso2) || cityEn;
   const countryRu = getCountryNom(iso2) || item.country_name_ru || '';
-  const cityDisplay = getCityNom(cityEn) || cityRu;
+  const cityDisplay = getCityNom(canonicalCity, iso2);
   const label =
     countryRu && cityDisplay && cityDisplay !== countryRu
       ? `${cityDisplay}, ${countryRu}`
       : cityDisplay || countryRu;
-  const cityPrep = getCityPrep(cityEn) || cityRu;
+  const cityPrep = getCityPrep(canonicalCity, iso2);
   const prep =
     countryRu && cityPrep && cityPrep !== countryRu
       ? `${cityPrep}, ${countryRu}`
-      : cityPrep || label;
+      : cityPrep || getCountryPrep(iso2) || label;
 
   return {
     kind: 'city',
     to_country: iso2,
-    to_city: cityEn,
+    to_city: canonicalCity,
     destination_label: label,
     destination_label_prep: prep,
     search_intent: 'package',
@@ -209,12 +239,13 @@ function buildPatchFromResult(item) {
   };
 }
 
-/**
- * Resolve any destination via Totus / Level.Travel autocomplete (all catalog countries & resorts).
- */
 async function resolveDestinationByText(query, fromCity = 'Moscow') {
   const trimmed = String(query || '').trim();
   if (trimmed.length < 2) return null;
+  if (isDepartureCityOnlyText(trimmed) && !extractDestinationQuery(trimmed)) return null;
+
+  const knownCountry = resolveKnownCountryQuery(trimmed);
+  if (knownCountry) return knownCountry;
 
   const knownCity = resolveKnownCityQuery(trimmed);
   if (knownCity) return knownCity;

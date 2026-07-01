@@ -105,6 +105,22 @@ function normalizeFromCity(value) {
   return value.trim();
 }
 
+/** Bare reply to «из какого города вылетаете?» — not a travel destination. */
+function isDepartureCityOnlyText(text) {
+  const key = String(text || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+  if (!key || key.length > 40) return false;
+  if (FROM_CITY_ALIASES[key]) return true;
+  if (/^(москв\w*|moscow)$/.test(key)) return true;
+  if (/^(питер|спб|санкт-?петербург|saint petersburg|st\.?\s*petersburg)$/.test(key)) return true;
+  if (/^(казан\w*|екатеринбург|новосибирск|yekaterinburg|novosibirsk|kazan)$/.test(key)) {
+    return true;
+  }
+  return false;
+}
+
 function normalizeToCity(value, toCountry) {
   if (!value || typeof value !== 'string') return value;
   const key = value.trim().toLowerCase();
@@ -134,23 +150,12 @@ function normalizeStartDate(dateStr) {
   return formatDateYmd(candidate);
 }
 
-const COUNTRY_DEFAULT_CITY = {
-  TH: 'Phuket',
-  EG: 'Hurghada',
-  VN: 'Nha Trang',
-  GR: 'Crete',
-  ES: 'Tenerife',
-  CY: 'Ayia Napa',
-  MV: 'Male',
-};
-
-function applyCountryDefaultCity(params = {}) {
-  const p = { ...params };
-  if (!p.to_country || p.to_city || p.hotel_ids?.length) return p;
-  const city = COUNTRY_DEFAULT_CITY[String(p.to_country).toUpperCase()];
-  if (city) p.to_city = city;
-  return p;
-}
+const {
+  COUNTRY_DEFAULT_CITY,
+  COUNTRY_QUERY_ALIASES,
+  applyCountryDefaultCity,
+  canonicalizeApiCity,
+} = require('./destination.catalog');
 
 function normalizeSearchParamsForApi(params = {}) {
   const p = applyCountryDefaultCity({ ...params });
@@ -162,9 +167,11 @@ function normalizeSearchParamsForApi(params = {}) {
     if (isCountryPlaceholderToCity(p.to_city, p.to_country)) {
       delete p.to_city;
     } else {
-      p.to_city = normalizeToCity(p.to_city, p.to_country);
+      p.to_city = canonicalizeApiCity(normalizeToCity(p.to_city, p.to_country), p.to_country);
     }
   }
+  const withCity = applyCountryDefaultCity(p);
+  Object.assign(p, withCity);
   if (p.start_date) {
     p.start_date = normalizeStartDate(p.start_date);
   }
@@ -187,6 +194,8 @@ module.exports = {
   normalizeStartDate,
   normalizeSearchParamsForApi,
   isCountryPlaceholderToCity,
+  isDepartureCityOnlyText,
   applyCountryDefaultCity,
   COUNTRY_DEFAULT_CITY,
+  COUNTRY_QUERY_ALIASES,
 };

@@ -5,8 +5,12 @@ const {
   formatDestinationSummary,
   formatDestinationInPhrase,
   formatDestinationPoPhrase,
+  formatPackageResultInPhrase,
+  syncDestinationLabels,
   isHotelSearch: isHotelDestinationSearch,
+  isPackageSearchParams,
 } = require('./destination.labels');
+const { normalizeSearchParamsForApi } = require('./search.params.normalizer');
 
 function stripMetaLanguage(text) {
   if (!text || typeof text !== 'string') return '';
@@ -82,7 +86,15 @@ function pluralizeRu(count, forms) {
 }
 
 function getSearchDestinationLabel(params) {
-  return formatDestinationInPhrase(params);
+  const p = params || {};
+  if (isPackageSearchParams(p) && !isHotelDestinationSearch(p)) {
+    return formatPackageResultInPhrase(p);
+  }
+  return formatDestinationInPhrase(p);
+}
+
+function sanitizeParamsForUserMessage(params) {
+  return syncDestinationLabels(normalizeSearchParamsForApi(params || {}));
 }
 
 function composeResultsCountMessage(params, count, { isPagination = false } = {}) {
@@ -287,24 +299,24 @@ function formatHotelLine(hotel, index) {
 }
 
 function composeResultsText(params, hotels, options = {}) {
+  const safeParams = sanitizeParamsForUserMessage(params);
   const count = hotels?.length || 0;
 
   if (options.isPagination) {
-    if (Number(params.filter_rating_min) > 0) {
-      return composeRatingFilterResultMessage(params, count, {
+    if (Number(safeParams.filter_rating_min) > 0) {
+      return composeRatingFilterResultMessage(safeParams, count, {
         isPagination: true,
         ratingFallback: options.ratingFallback,
       });
     }
-    return composeResultsCountMessage(params, count, { isPagination: true });
+    return composeResultsCountMessage(safeParams, count, { isPagination: true });
   }
 
   if (!count) {
-    return composeNoResultsAdvice(params, options);
+    return composeNoResultsAdvice(safeParams, options);
   }
 
-  // Text is count-only — name, rating, price shown in hotel cards in the app.
-  return composeResultsIntro(params, hotels, options);
+  return composeResultsIntro(safeParams, hotels, options);
 }
 
 module.exports = {

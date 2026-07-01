@@ -3,6 +3,11 @@
  * API/search still uses ISO country codes and English city names internally.
  */
 
+const {
+  CITY_LABELS_RU,
+  isRedundantApiCityName,
+} = require('./destination.catalog');
+
 const COUNTRY_LABELS = {
   TR: { nom: 'Турция', prep: 'Турции' },
   EG: { nom: 'Египет', prep: 'Египте' },
@@ -46,24 +51,7 @@ const COUNTRY_LABELS = {
   US: { nom: 'США', prep: 'США' },
 };
 
-const CITY_LABELS = {
-  Antalya: { nom: 'Анталья', prep: 'Анталье' },
-  Belek: { nom: 'Белек', prep: 'Белеке' },
-  Istanbul: { nom: 'Стамбул', prep: 'Стамбуле' },
-  Dubai: { nom: 'Дубай', prep: 'Дубае' },
-  'Abu Dhabi': { nom: 'Абу-Даби', prep: 'Абу-Даби' },
-  Bali: { nom: 'Бали', prep: 'Бали' },
-  'Bali Island': { nom: 'Бали', prep: 'Бали' },
-  Hurghada: { nom: 'Хургада', prep: 'Хургаде' },
-  'Sharm El Sheikh': { nom: 'Шарм-эль-Шейх', prep: 'Шарм-эль-Шейхе' },
-  Phuket: { nom: 'Пхукет', prep: 'Пхукете' },
-  Bangkok: { nom: 'Бангкок', prep: 'Бангкоке' },
-  Barcelona: { nom: 'Барселона', prep: 'Барселоне' },
-  Rome: { nom: 'Рим', prep: 'Риме' },
-  Paris: { nom: 'Париж', prep: 'Париже' },
-  Moscow: { nom: 'Москва', prep: 'Москве' },
-  'Saint Petersburg': { nom: 'Санкт-Петербург', prep: 'Санкт-Петербурге' },
-};
+const CITY_LABELS = { ...CITY_LABELS_RU };
 
 const ISO_CODE = /^[A-Z]{2}$/i;
 
@@ -91,18 +79,22 @@ function getCountryPrep(code) {
   return getCountryNom(code);
 }
 
-function getCityNom(city) {
+function getCityNom(city, countryCode) {
   const key = normalizeCityKey(city);
   if (!key) return '';
   if (CITY_LABELS[key]) return CITY_LABELS[key].nom;
+  if (isRedundantApiCityName(key, countryCode)) return '';
+  if (/^[a-zA-Z0-9\s\-'.]{2,}$/.test(key)) return '';
   return key;
 }
 
-function getCityPrep(city) {
+function getCityPrep(city, countryCode) {
   const key = normalizeCityKey(city);
   if (!key) return '';
   if (CITY_LABELS[key]) return CITY_LABELS[key].prep;
-  return getCityNom(city);
+  if (isRedundantApiCityName(key, countryCode)) return '';
+  if (/^[a-zA-Z0-9\s\-'.]{2,}$/.test(key)) return '';
+  return key;
 }
 
 function isHotelSearch(params) {
@@ -116,7 +108,7 @@ function isHotelSearch(params) {
 
 function buildLiveDestinationSummary(params) {
   const p = params || {};
-  const cityNom = p.to_city ? getCityNom(p.to_city) : '';
+  const cityNom = p.to_city ? getCityNom(p.to_city, p.to_country) : '';
   const countryNom = p.to_country ? getCountryNom(p.to_country) : '';
   if (cityNom && countryNom && cityNom !== countryNom) {
     return `${cityNom}, ${countryNom}`;
@@ -126,12 +118,41 @@ function buildLiveDestinationSummary(params) {
   return '';
 }
 
+function isPackageSearchParams(params) {
+  const p = params || {};
+  return Boolean(
+    p.search_type === 'package' ||
+      p.search_intent === 'package' ||
+      (!p.hotel_ids?.length && !p.hotel_name && p.search_type !== 'hotel'),
+  );
+}
+
+/**
+ * User-facing «в …» for package results: only Russian city+country or country alone.
+ * Never shows raw API region names (e.g. «Aegean Sea Turkey»).
+ */
+function formatPackageResultInPhrase(params) {
+  const p = params || {};
+  const countryNom = p.to_country ? getCountryNom(p.to_country) : '';
+  const countryPrep = p.to_country ? getCountryPrep(p.to_country) : '';
+  const cityNom = p.to_city ? getCityNom(p.to_city, p.to_country) : '';
+  const cityPrep = p.to_city ? getCityPrep(p.to_city, p.to_country) : '';
+
+  if (cityPrep && cityNom && countryNom && cityNom !== countryNom) {
+    return `${cityPrep}, ${countryNom}`;
+  }
+  return countryPrep || '';
+}
+
 function buildLiveDestinationPhrase(params) {
   const p = params || {};
-  const cityPrep = p.to_city ? getCityPrep(p.to_city) : '';
+  if (isPackageSearchParams(p) && !isHotelSearch(p)) {
+    return formatPackageResultInPhrase(p);
+  }
+  const cityPrep = p.to_city ? getCityPrep(p.to_city, p.to_country) : '';
   const countryNom = p.to_country ? getCountryNom(p.to_country) : '';
   if (cityPrep && countryNom) {
-    const cityNom = getCityNom(p.to_city);
+    const cityNom = getCityNom(p.to_city, p.to_country);
     if (cityNom === countryNom) return cityPrep;
     return `${cityPrep}, ${countryNom}`;
   }
@@ -150,9 +171,6 @@ function formatDestinationSummary(params) {
   }
   const live = buildLiveDestinationSummary(p);
   if (live) return live;
-  if (p.destination_label && String(p.destination_label).trim()) {
-    return String(p.destination_label).trim();
-  }
   return '';
 }
 
@@ -166,9 +184,6 @@ function formatDestinationInPhrase(params) {
   }
   const live = buildLiveDestinationPhrase(p);
   if (live) return live;
-  if (p.destination_label_prep && String(p.destination_label_prep).trim()) {
-    return String(p.destination_label_prep).trim();
-  }
   return '';
 }
 
@@ -200,6 +215,8 @@ module.exports = {
   formatDestinationSummary,
   formatDestinationInPhrase,
   formatDestinationPoPhrase,
+  formatPackageResultInPhrase,
   syncDestinationLabels,
   isHotelSearch,
+  isPackageSearchParams,
 };

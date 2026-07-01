@@ -19,6 +19,7 @@ const {
   summarizeKnownParams,
 } = require('./conversation.state');
 const { formatDestinationPoPhrase, formatDestinationSummary, formatDestinationInPhrase, syncDestinationLabels } = require('./destination.labels');
+const { applyCountryDefaultCity } = require('./destination.catalog');
 const { composeLimitedCatalogAdvice, isLimitedPackageDestination } = require('./response.composer');
 const { extractDestinationQuery, extractExplicitCityName, resolveDestinationByText } = require('./destination.resolver');
 const { applyExtraction, mergeSearchParams } = require('./params.extractor');
@@ -174,6 +175,18 @@ async function handleTravelAdvice(conversation, userText, params, onChunk) {
   return pushAssistantReply(conversation, reply, onChunk);
 }
 
+const NON_DESTINATION_COLLECTION_FIELDS = new Set([
+  'from_city',
+  'start_date',
+  'nights',
+  'adults',
+  'kids',
+  'kids_ages',
+  'filter_price_max',
+  'filter_meals',
+  'search_intent',
+]);
+
 async function enrichDestinationFromApi(
   conversation,
   userText,
@@ -182,6 +195,17 @@ async function enrichDestinationFromApi(
 ) {
   const params = conversation.searchParams || {};
   if (params.hotel_ids?.length || params.search_intent === 'hotel') return;
+
+  if (NON_DESTINATION_COLLECTION_FIELDS.has(nextFieldBefore)) {
+    const explicitDest =
+      extractDestinationQuery(userText) || extractExplicitCityName(userText);
+    if (!explicitDest) {
+      if (params.to_country) {
+        conversation.searchParams = syncDestinationLabels(params);
+      }
+      return;
+    }
+  }
 
   const query =
     nextFieldBefore === 'destination'
@@ -228,8 +252,9 @@ async function enrichDestinationFromApi(
   const { kind, ...patch } = resolved;
   conversation.searchParams = syncDestinationLabels(mergeSearchParams(params, patch));
   if (kind === 'country') {
-    delete conversation.searchParams.to_city;
-    conversation.searchParams = syncDestinationLabels(conversation.searchParams);
+    conversation.searchParams = syncDestinationLabels(
+      applyCountryDefaultCity(conversation.searchParams),
+    );
   }
 }
 
