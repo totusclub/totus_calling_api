@@ -593,10 +593,6 @@ async function runHotelSearch(
     }
   }
 
-  if (!enriched.length && !isPagination && priceCap) {
-    return { hotels: [], triedRelaxed: false, budgetExceeded: true };
-  }
-
   if (!enriched.length && !isPagination && Number(ratingMin) > 0) {
     const fallbackHotels = await tryBestRatingFallback(conversation, searchParams, {
       requestId,

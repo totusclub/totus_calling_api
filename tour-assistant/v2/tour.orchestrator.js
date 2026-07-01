@@ -8,6 +8,7 @@ const {
   userWantsMoreHotelsAfterResults,
   userWantsRetrySearch,
   userAsksWhyNoResults,
+  userAsksSearchAlternatives,
   userAsksDestinationActivities,
   userAsksHotelComparison,
   isPostSearchAdvisoryText,
@@ -18,6 +19,7 @@ const {
   summarizeKnownParams,
 } = require('./conversation.state');
 const { formatDestinationPoPhrase, formatDestinationSummary, formatDestinationInPhrase, syncDestinationLabels } = require('./destination.labels');
+const { composeLimitedCatalogAdvice, isLimitedPackageDestination } = require('./response.composer');
 const { extractDestinationQuery, extractExplicitCityName, resolveDestinationByText } = require('./destination.resolver');
 const { applyExtraction, mergeSearchParams } = require('./params.extractor');
 const { extractParamsWithAi } = require('./ai.param-extractor');
@@ -69,11 +71,11 @@ async function runEscalatedSearch(conversation, onChunk) {
   const { patch, level, preface, exhausted } = applyEscalationStep(conversation, params);
 
   if (exhausted) {
-    const dest = formatDestinationSummary(params) || 'этом направлении';
-    const reply =
-      `По ${dest} исчерпал стандартные варианты поиска. ` +
-      'Рекомендую начать новый чат (кнопка «+») и указать направление, даты и бюджет заново — ' +
-      'или попробуйте поиск на totus.club с теми же параметрами.';
+    const reply = isLimitedPackageDestination(params)
+      ? composeLimitedCatalogAdvice(params)
+      : `По ${formatDestinationSummary(params) || 'этом направлении'} исчерпал стандартные варианты поиска. ` +
+        'Рекомендую начать новый чат (кнопка «+») и указать направление, даты и бюджет заново — ' +
+        'или попробуйте поиск на totus.club с теми же параметрами.';
     const msg = createTextMessage({ role: 'assistant', content: reply });
     conversation.messages.push(msg);
     recordAssistantReply(conversation, reply);
@@ -285,6 +287,9 @@ function buildPostSearchReply(conversation, userText, params) {
       return `Поиск завершился с ошибкой при обработке результатов. Параметры сохранены: ${known}. Напишите «найди снова» — повторю поиск, или укажите другие даты.`;
     }
     if (!hadResults) {
+      if (isLimitedPackageDestination(params)) {
+        return composeLimitedCatalogAdvice(params);
+      }
       return `По ${formatDestinationPoPhrase(params)} на ${params.start_date || 'выбранные даты'} (${params.nights || '?'} ночей) сейчас нет доступных туров. Могу сдвинуть даты на неделю или предложить соседний курорт — что предпочитаете?`;
     }
     return `Результаты уже показаны выше. Могу найти другие варианты — напишите «ещё» или уточните даты.`;
@@ -463,6 +468,14 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
 
   if (intent.primary === 'TRAVEL_ADVICE') {
     return handleTravelAdvice(conversation, userText, params, onChunk);
+  }
+
+  if (intent.primary === 'NO_RESULTS_ALTERNATIVES') {
+    const reply = isLimitedPackageDestination(params)
+      ? composeLimitedCatalogAdvice(params)
+      : `По ${formatDestinationPoPhrase(params)} туров в каталоге сейчас нет. ` +
+        'Могу рассказать о направлении, подобрать другую страну с готовыми турами или поискать только отель — что выберете?';
+    return pushAssistantReply(conversation, reply, onChunk);
   }
 
   if (intent.rejectCurrent) {

@@ -37,6 +37,41 @@ function isPackageSearch(params) {
   );
 }
 
+const LIMITED_PACKAGE_COUNTRIES = new Set([
+  'FR',
+  'DE',
+  'AT',
+  'CH',
+  'NL',
+  'BE',
+  'CZ',
+  'PL',
+  'GB',
+  'IT',
+  'ES',
+  'PT',
+]);
+
+function isLimitedPackageDestination(params) {
+  if (!isPackageSearch(params)) return false;
+  const country = String(params?.to_country || '').toUpperCase();
+  return LIMITED_PACKAGE_COUNTRIES.has(country);
+}
+
+function composeLimitedCatalogAdvice(params) {
+  const dest = formatDestinationPoPhrase(params);
+  return [
+    `Пакетных туров из Москвы в ${dest} сейчас нет в каталоге Totus — для многих европейских направлений это обычная ситуация.`,
+    '',
+    'Могу помочь по-другому:',
+    '• Рассказать, что посмотреть и чем заняться (достопримечательности, районы, сезон)',
+    '• Подобрать другое направление с готовыми турами (Турция, Египет, ОАЭ, Таиланд, Индонезия)',
+    '• Поискать только отель, если перелёт уже организован',
+    '',
+    'Что вам ближе — информация о направлении или подбор другой страны?',
+  ].join('\n');
+}
+
 function pluralizeRu(count, forms) {
   const n = Math.abs(Number(count)) % 100;
   const n1 = n % 10;
@@ -173,6 +208,7 @@ function composeNoResultsAdvice(params, {
   ratingMinExceeded = false,
   hotelOverBudget = false,
   actualMinPrice = null,
+  catalogLimited = false,
 } = {}) {
   const dest = formatDestinationPoPhrase(params);
   const budget = params.filter_price_max
@@ -181,6 +217,10 @@ function composeNoResultsAdvice(params, {
   const ratingMin = params.filter_rating_min
     ? Number(params.filter_rating_min).toFixed(1)
     : null;
+
+  if (catalogLimited || isLimitedPackageDestination(params)) {
+    return composeLimitedCatalogAdvice(params);
+  }
 
   if (budgetExceeded && budget && hotelOverBudget && actualMinPrice) {
     const hotelName = params.hotel_name || 'этому отелю';
@@ -271,6 +311,8 @@ module.exports = {
   stripMetaLanguage,
   composeResultsIntro,
   composeNoResultsAdvice,
+  composeLimitedCatalogAdvice,
   composeResultsText,
   formatHotelLine,
+  isLimitedPackageDestination,
 };

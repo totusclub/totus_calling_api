@@ -207,11 +207,22 @@ function isPostSearchAdvisoryText(text) {
   return advisoryPatterns.some(Boolean);
 }
 
+function isNoResultsAssistantMessage(message) {
+  if (message?.role !== 'assistant' || typeof message.content !== 'string') return false;
+  return /нет подходящих туров|нет туров в пределах|нет туров с рейтингом/i.test(
+    message.content,
+  );
+}
+
 function getLastShownHotels(conversation) {
   const msgs = conversation?.messages || [];
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
-    if (m.role === 'assistant' && Array.isArray(m.hotels) && m.hotels.length) {
+    if (m.role !== 'assistant') continue;
+    if (isNoResultsAssistantMessage(m)) {
+      return conversation?.results?.hotels || [];
+    }
+    if (Array.isArray(m.hotels) && m.hotels.length) {
       return m.hotels;
     }
   }
@@ -261,12 +272,27 @@ function userAsksWhyNoResults(text) {
   );
 }
 
+function userAsksSearchAlternatives(text) {
+  const t = (text || '').toLowerCase().trim();
+  if (!t) return false;
+  return (
+    /где\s+(можно|есть|найти)/i.test(t) ||
+    /что\s+(могу|можешь|можете)\s+(там\s+)?(найти|посмотреть)/i.test(t) ||
+    /что\s+мог(у|ете)\s+найти/i.test(t) ||
+    /друг(ое|ой|ая)\s+направлен/i.test(t) ||
+    /куда\s+(ещё|еще|можно)\s+(поехать|лететь)/i.test(t) ||
+    /приглашени/i.test(t) ||
+    /где\s+есть\s+тур/i.test(t) ||
+    /не\s+может\s+быть/i.test(t)
+  );
+}
+
 function userAsksDestinationActivities(text) {
   const t = (text || '').toLowerCase().trim();
   if (!t) return false;
 
   const patterns = [
-    /что\s+(можно|могу)\s+(там\s+)?(сделать|делать)/,
+    /что\s+(можно|могу|магу)\s+(там\s+)?(сделать|делать)/,
     /что\s+(там\s+)?(посмотреть|увидеть|интересного)/,
     /чем\s+(там\s+)?(заняться|занят)/,
     /можешь\s+(сказать|рассказать).*что\s+(можно|могу)/,
@@ -446,7 +472,9 @@ module.exports = {
   getLastShownHotels,
   getAllShownHotelIds,
   userAsksWhyNoResults,
+  userAsksSearchAlternatives,
   userAsksDestinationActivities,
+  isNoResultsAssistantMessage,
   buildSearchFingerprint,
   searchFiltersChanged,
   SEARCH_FILTER_KEYS,

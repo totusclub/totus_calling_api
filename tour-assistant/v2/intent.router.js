@@ -1,5 +1,6 @@
 const {
   userAsksWhyNoResults,
+  userAsksSearchAlternatives,
   userAsksDestinationActivities,
   userAsksHotelComparison,
   userWantsMoreHotelsAfterResults,
@@ -88,6 +89,18 @@ function classifyIntent(userText, conversation, context = {}) {
     };
   }
 
+  if (
+    conversation.meta?.last_search_outcome === 'no_results' &&
+    userAsksSearchAlternatives(userText)
+  ) {
+    return {
+      primary: 'NO_RESULTS_ALTERNATIVES',
+      forcesSearch: false,
+      allowsTemplateReply: false,
+      confidence: 0.9,
+    };
+  }
+
   if (userMentionsTravelAdvice(userText)) {
     return {
       primary: 'TRAVEL_ADVICE',
@@ -116,10 +129,11 @@ function classifyIntent(userText, conversation, context = {}) {
   }
 
   if (userAsksWhyNoResults(userText)) {
+    const noResultsNow = conversation.meta?.last_search_outcome === 'no_results';
     return {
       primary: 'WHY_NO_RESULTS',
-      forcesSearch: shownCount === 0 || conversation.searchFailed,
-      allowsTemplateReply: shownCount > 0,
+      forcesSearch: !noResultsNow && (shownCount === 0 || conversation.searchFailed),
+      allowsTemplateReply: shownCount > 0 || noResultsNow,
       confidence: 0.85,
     };
   }

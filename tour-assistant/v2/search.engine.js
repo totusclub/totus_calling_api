@@ -2,7 +2,7 @@ const { ConversationStage, buildSearchFingerprint, prepareSearchParams } = requi
 const { syncDestinationLabels } = require('./destination.labels');
 const hotelSearch = require('./hotel.search.service');
 const { createAssistantMessage } = require('./dto/messages');
-const { composeResultsText } = require('./response.composer');
+const { composeResultsText, isLimitedPackageDestination } = require('./response.composer');
 const memory = require('./memory.store');
 const {
   recordSearchOutcome,
@@ -47,6 +47,8 @@ async function executeSearch(
       ratingFallback,
       hotelOverBudget,
       actualMinPrice,
+      catalogLimited:
+        !(hotels || []).length && isLimitedPackageDestination(conversation.searchParams),
     });
 
     if (escalationNote && (hotels || []).length) {
