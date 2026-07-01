@@ -130,9 +130,10 @@ async function startSearch(searchParams) {
     'hotel_ids',
   ];
   for (const key of fields) {
-    if (normalized[key] !== undefined && normalized[key] !== '') {
-      clean[key] = normalized[key];
-    }
+    const val = normalized[key];
+    if (val === undefined || val === '') continue;
+    if (Array.isArray(val) && val.length === 0) continue;
+    clean[key] = val;
   }
   if (String(clean.kids || '0') === '0') {
     delete clean.kids_ages;
@@ -149,9 +150,35 @@ async function startSearch(searchParams) {
     const res = await api.get('/start-search', { params: clean });
     return res.data?.request_id;
   } catch (err) {
+    const status = err.response?.status;
+    const canRetryWithoutCity =
+      status === 500 &&
+      clean.to_city &&
+      clean.search_type === 'package' &&
+      !clean.hotel_ids?.length;
+
+    if (canRetryWithoutCity) {
+      const fallback = { ...clean };
+      delete fallback.to_city;
+      try {
+        console.warn(
+          '[V2 hotel.search] start-search retry without to_city:',
+          `${fallback.to_country}/${clean.to_city}`,
+        );
+        const res = await api.get('/start-search', { params: fallback });
+        return res.data?.request_id;
+      } catch (retryErr) {
+        console.error(
+          '[V2 hotel.search] start-search retry failed:',
+          retryErr.response?.status,
+          retryErr.response?.data || retryErr.message,
+        );
+      }
+    }
+
     console.error(
       '[V2 hotel.search] start-search failed:',
-      err.response?.status,
+      status,
       err.response?.data || err.message,
     );
     return null;

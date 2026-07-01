@@ -47,6 +47,12 @@ const COUNTRY_DEFAULT_CITY = {
   RU: 'Sochi',
 };
 
+/**
+ * Package /start-search: API returns 500 with default city but works country-only.
+ * AM + Yerevan → 500; AM without to_city → OK (hotels still returned).
+ */
+const PACKAGE_COUNTRY_WITHOUT_CITY = new Set(['AM']);
+
 /** Russian / English country names → ISO code (incl. common cases). */
 const COUNTRY_QUERY_ALIASES = {
   турция: 'TR',
@@ -238,6 +244,8 @@ const KNOWN_CITY_RESOLVES = {
   канкун: { country: 'MX', city: 'Cancun' },
   'punta cana': { country: 'DO', city: 'Punta Cana' },
   'пунта-кана': { country: 'DO', city: 'Punta Cana' },
+  ереван: { country: 'AM', city: 'Yerevan' },
+  yerevan: { country: 'AM', city: 'Yerevan' },
 };
 
 /** Raw API region/metaregion names → canonical search city. */
@@ -391,6 +399,10 @@ function applyCountryDefaultCity(params = {}) {
   const p = { ...params };
   if (!p.to_country || p.hotel_ids?.length) return p;
   const country = String(p.to_country).toUpperCase();
+  if (PACKAGE_COUNTRY_WITHOUT_CITY.has(country)) {
+    delete p.to_city;
+    return p;
+  }
   const defaultCity = getDefaultCityForCountry(country);
   if (!defaultCity) return p;
   if (!p.to_city || isRedundantApiCityName(p.to_city, country)) {
@@ -412,4 +424,5 @@ module.exports = {
   isRedundantApiCityName,
   canonicalizeApiCity,
   applyCountryDefaultCity,
+  PACKAGE_COUNTRY_WITHOUT_CITY,
 };
