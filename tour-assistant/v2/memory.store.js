@@ -42,6 +42,16 @@ function createEmptyConversation({ userId, title } = {}) {
       readyOperators: [],
       currentPage: 0,
     },
+    meta: {
+      last_reply_hash: '',
+      identical_reply_streak: 0,
+      escalation_level: 0,
+      last_search_outcome: null,
+      turn_count: 0,
+      episodic: [],
+      suggested_reset: false,
+    },
+    semantic: { preferences: {} },
   };
 }
 

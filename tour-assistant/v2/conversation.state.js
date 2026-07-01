@@ -301,6 +301,7 @@ function buildSearchFingerprint(params) {
     filter_meals: p.filter_meals,
     filter_stars: p.filter_stars,
     filter_rating_min: p.filter_rating_min,
+    flex_dates: p.flex_dates,
   });
 }
 

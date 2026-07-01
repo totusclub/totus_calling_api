@@ -29,10 +29,129 @@ const { generateDestinationActivitiesAnswer } = require('./destination.info.comp
 const { generatePostSearchReply, generateHotelComparisonReply } = require('./post.search.composer');
 const memory = require('./memory.store');
 const manager = require('./conversation.manager');
+const { classifyIntent } = require('./intent.router');
+const {
+  ensureMeta,
+  recordTurn,
+  recordAssistantReply,
+  shouldForceEscalation,
+  appendEpisodicEvent,
+  isConversationTooLong,
+} = require('./conversation.health');
+const { applyEscalationStep, resetEscalation } = require('./escalation.engine');
+const {
+  savePreferencesFromPatch,
+  applySemanticDefaults,
+  clearDestinationParams,
+  sanitizeFromCity,
+} = require('./memory.episodic');
+const { verifyBeforeSend } = require('./verifier');
 
 function ensureConversationState(conversation) {
   if (!conversation.stage) conversation.stage = ConversationStage.COLLECTING_PARAMS;
   if (!conversation.results) conversation.results = { hotels: [] };
+  ensureMeta(conversation);
+}
+
+function resetSearchSession(conversation) {
+  conversation.searchSession = {
+    requestId: null,
+    readyOperators: [],
+    currentPage: 0,
+  };
+  conversation.shownHotelIds = [];
+  conversation.lastSearchFingerprint = null;
+  conversation.searchParams = mergeSearchParams(conversation.searchParams || {}, { page_number: 1 });
+}
+
+async function runEscalatedSearch(conversation, onChunk) {
+  const params = conversation.searchParams || {};
+  const { patch, level, preface, exhausted } = applyEscalationStep(conversation, params);
+
+  if (exhausted) {
+    const dest = formatDestinationSummary(params) || 'этом направлении';
+    const reply =
+      `По ${dest} исчерпал стандартные варианты поиска. ` +
+      'Рекомендую начать новый чат (кнопка «+») и указать направление, даты и бюджет заново — ' +
+      'или попробуйте поиск на totus.club с теми же параметрами.';
+    const msg = createTextMessage({ role: 'assistant', content: reply });
+    conversation.messages.push(msg);
+    recordAssistantReply(conversation, reply);
+    conversation.meta.suggested_reset = true;
+    memory.saveConversation(conversation);
+    const payload = buildApiPayload(conversation);
+    if (onChunk) onChunk({ event: 'final_message', data: payload });
+    return payload;
+  }
+
+  conversation.searchParams = mergeSearchParams(params, patch);
+  conversation.searchParams = syncDestinationLabels(conversation.searchParams);
+  resetSearchSession(conversation);
+  conversation.stage = ConversationStage.READY_TO_SEARCH;
+  conversation.searchParams = prepareSearchParams(conversation.searchParams);
+  memory.saveConversation(conversation);
+
+  appendEpisodicEvent(conversation, { type: 'escalation', level, patch });
+
+  await executeSearch(conversation, { isPagination: false, escalationNote: preface });
+  const lastMsg = conversation.messages[conversation.messages.length - 1];
+  if (lastMsg?.role === 'assistant' && lastMsg.content) {
+    recordAssistantReply(conversation, lastMsg.content);
+  }
+  memory.saveConversation(conversation);
+  const payload = buildApiPayload(conversation);
+  if (onChunk) onChunk({ event: 'final_message', data: payload });
+  return payload;
+}
+
+function pushAssistantReply(conversation, content, onChunk) {
+  const msg = createTextMessage({ role: 'assistant', content });
+  conversation.messages.push(msg);
+  recordAssistantReply(conversation, content);
+  memory.saveConversation(conversation);
+  const payload = buildApiPayload(conversation);
+  if (onChunk) onChunk({ event: 'final_message', data: payload });
+  return payload;
+}
+
+async function handleComplaint(conversation, userText, params, onChunk) {
+  const summary = summarizeKnownParams(params).join('; ') || 'параметры не полностью собраны';
+  const reply =
+    `Понимаю — извините за повторяющиеся ответы. Сейчас в сессии: ${summary}. ` +
+    'Могу сразу повторить поиск с другими параметрами — напишите куда хотите поехать и бюджет, ' +
+    'или начните новый чат (кнопка «+»), чтобы сбросить старые данные.';
+  conversation.meta.identical_reply_streak = 0;
+  conversation.meta.suggested_reset = true;
+  appendEpisodicEvent(conversation, { type: 'complaint', userText: userText.slice(0, 120) });
+  return pushAssistantReply(conversation, reply, onChunk);
+}
+
+async function handleSessionReset(conversation, onChunk) {
+  const kept = {
+    from_city: conversation.searchParams?.from_city || 'Moscow',
+    from_country: conversation.searchParams?.from_country || 'RU',
+    adults: conversation.searchParams?.adults || '',
+  };
+  conversation.searchParams = mergeSearchParams(clearDestinationParams({}), kept);
+  resetSearchSession(conversation);
+  resetEscalation(conversation);
+  conversation.meta.identical_reply_streak = 0;
+  conversation.meta.last_reply_hash = '';
+  conversation.stage = ConversationStage.COLLECTING_PARAMS;
+  appendEpisodicEvent(conversation, { type: 'soft_reset' });
+  const reply =
+    'Начинаем с чистого листа. Куда планируете поехать — страна, город или конкретный отель?';
+  return pushAssistantReply(conversation, reply, onChunk);
+}
+
+async function handleTravelAdvice(conversation, userText, params, onChunk) {
+  const dest = formatDestinationSummary(params);
+  const reply = dest
+    ? `По вопросу «${userText.slice(0, 80)}»: для ${dest} уточню детали при бронировании. ` +
+      'Если нужны туры с ценами — напишите даты и бюджет, и я подберу варианты из каталога Totus.'
+    : `Хороший вопрос. Чтобы дать точный ответ по визе, погоде или сезону, сначала укажите направление — ` +
+      'куда планируете поехать?';
+  return pushAssistantReply(conversation, reply, onChunk);
 }
 
 async function enrichDestinationFromApi(
@@ -216,6 +335,7 @@ async function handleDestinationActivitiesQuestion(
     content: `${infoAnswer}${tail}`,
   });
   conversation.messages.push(msg);
+  recordAssistantReply(conversation, `${infoAnswer}${tail}`);
   conversation.stage = resolveStage(params, conversation.stage);
   memory.saveConversation(conversation);
 
@@ -310,8 +430,62 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
 
   await resolveHotelNames(conversation);
   conversation.searchParams = applyDefaults(conversation.searchParams);
+  conversation.searchParams = sanitizeFromCity(conversation.searchParams, userText);
+  conversation.searchParams = applySemanticDefaults(conversation.searchParams, conversation);
+  savePreferencesFromPatch(conversation, justReceived);
 
   const params = conversation.searchParams;
+
+  recordTurn(conversation);
+  const shownCount = getLastShownHotels(conversation).length;
+  const intent = classifyIntent(userText, conversation, { justReceived, params });
+  appendEpisodicEvent(conversation, {
+    type: 'turn',
+    intent: intent.primary,
+    confidence: intent.confidence,
+  });
+
+  if (isConversationTooLong(conversation) && !conversation.meta.suggested_reset) {
+    conversation.meta.suggested_reset = true;
+    const longReply =
+      'Диалог стал длинным — параметры могли запутаться. ' +
+      'Для точного поиска рекомендую новый чат (кнопка «+») или напишите «с нуля».';
+    return pushAssistantReply(conversation, longReply, onChunk);
+  }
+
+  if (intent.primary === 'COMPLAINT') {
+    return handleComplaint(conversation, userText, params, onChunk);
+  }
+
+  if (intent.primary === 'RESET_SESSION') {
+    return handleSessionReset(conversation, onChunk);
+  }
+
+  if (intent.primary === 'TRAVEL_ADVICE') {
+    return handleTravelAdvice(conversation, userText, params, onChunk);
+  }
+
+  if (intent.rejectCurrent) {
+    conversation.searchParams = clearDestinationParams(params);
+    conversation.searchParams = sanitizeFromCity(
+      mergeSearchParams(conversation.searchParams, {
+        from_city: params.from_city || 'Moscow',
+        from_country: params.from_country || 'RU',
+        adults: params.adults,
+        start_date: params.start_date,
+        nights: params.nights,
+      }),
+      userText,
+    );
+    resetSearchSession(conversation);
+    resetEscalation(conversation);
+    await enrichDestinationFromApi(conversation, userText, 'destination', {});
+    appendEpisodicEvent(conversation, { type: 'reject_destination' });
+  }
+
+  const forceEscalation = shouldForceEscalation(conversation);
+  const forcesSearch =
+    intent.forcesSearch || forceEscalation || intent.primary === 'WHY_NO_RESULTS';
 
   if (isAdvisoryTurn) {
     const shownHotels = getLastShownHotels(conversation);
@@ -320,6 +494,7 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
       : await generatePostSearchReply(userText, conversation, params);
     const msg = createTextMessage({ role: 'assistant', content: reply });
     conversation.messages.push(msg);
+    recordAssistantReply(conversation, reply);
     conversation.stage = ConversationStage.RESULTS;
     memory.saveConversation(conversation);
     const payload = buildApiPayload(conversation);
@@ -359,7 +534,6 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
     const alreadySearched = conversation.lastSearchFingerprint === fingerprint;
     const wantsRetry = userWantsRetrySearch(userText);
     const filtersChanged = searchFiltersChanged(justReceived);
-    const shownCount = getLastShownHotels(conversation).length;
     const retryAfterNoResults =
       userAsksWhyNoResults(userText) && (conversation.searchFailed || shownCount === 0);
     const inResultsStage =
@@ -367,27 +541,30 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
       conversation.searchFailed ||
       conversation.lastSearchFingerprint;
 
-    if (
+    const useTemplateReply =
       alreadySearched &&
       inResultsStage &&
       !wantsRetry &&
       !filtersChanged &&
       !wantsMore &&
-      !retryAfterNoResults
-    ) {
-      const reply = userAsksWhyNoResults(userText)
+      !retryAfterNoResults &&
+      !forcesSearch &&
+      intent.allowsTemplateReply !== false;
+
+    if (useTemplateReply) {
+      let reply = userAsksWhyNoResults(userText)
         ? buildPostSearchReply(conversation, userText, params)
         : await generatePostSearchReply(userText, conversation, params);
-      const msg = createTextMessage({ role: 'assistant', content: reply });
-      conversation.messages.push(msg);
-      conversation.stage = ConversationStage.RESULTS;
-      memory.saveConversation(conversation);
-      const payload = buildApiPayload(conversation);
-      if (onChunk) onChunk({ event: 'final_message', data: payload });
-      return payload;
+
+      const verification = verifyBeforeSend(conversation, reply, { intent });
+      if (!verification.ok && verification.shouldEscalate) {
+        return runEscalatedSearch(conversation, onChunk);
+      }
+
+      return pushAssistantReply(conversation, reply, onChunk);
     }
 
-    if (filtersChanged || retryAfterNoResults) {
+    if (filtersChanged || retryAfterNoResults || forcesSearch) {
       conversation.searchParams = mergeSearchParams(params, { page_number: 1 });
       conversation.searchSession = {
         requestId: null,
@@ -422,7 +599,24 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
     conversation.stage = ConversationStage.READY_TO_SEARCH;
     conversation.searchParams = prepareSearchParams(conversation.searchParams);
     memory.saveConversation(conversation);
+
+    if (forceEscalation && (conversation.meta?.escalation_level || 0) > 0) {
+      return runEscalatedSearch(conversation, onChunk);
+    }
+
     await executeSearch(conversation, { isPagination: false });
+    const lastMsg = conversation.messages[conversation.messages.length - 1];
+    if (lastMsg?.role === 'assistant' && lastMsg.content) {
+      recordAssistantReply(conversation, lastMsg.content);
+    }
+    if (
+      getLastShownHotels(conversation).length === 0 &&
+      !conversation.searchFailed &&
+      (conversation.meta?.escalation_level || 0) < 4
+    ) {
+      return runEscalatedSearch(conversation, onChunk);
+    }
+    memory.saveConversation(conversation);
     const payload = buildApiPayload(conversation);
     if (onChunk) onChunk({ event: 'final_message', data: payload });
     return payload;
@@ -439,16 +633,8 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
     justReceived,
   );
 
-  const msg = createTextMessage({
-    role: 'assistant',
-    content: assistantContent || 'Расскажите, куда планируете поехать?',
-  });
-  conversation.messages.push(msg);
-  memory.saveConversation(conversation);
-
-  const payload = buildApiPayload(conversation);
-  if (onChunk) onChunk({ event: 'final_message', data: payload });
-  return payload;
+  const fallback = assistantContent || 'Расскажите, куда планируете поехать?';
+  return pushAssistantReply(conversation, fallback, onChunk);
 }
 
 module.exports = {
