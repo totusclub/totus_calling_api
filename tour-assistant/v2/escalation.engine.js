@@ -1,3 +1,5 @@
+const { clampFlexDates, MAX_FLEX_DATES } = require('./search.params.normalizer');
+
 function shiftIsoDate(iso, days) {
   if (!iso) return iso;
   const d = new Date(iso);
@@ -29,7 +31,7 @@ function applyEscalationStep(conversation, params) {
 
   switch (level) {
     case 1:
-      patch.flex_dates = Math.max(Number(params.flex_dates) || 2, 7);
+      patch.flex_dates = clampFlexDates(Math.max(Number(params.flex_dates) || 2, MAX_FLEX_DATES));
       break;
     case 2:
       patch.filter_meals = '';
@@ -46,7 +48,7 @@ function applyEscalationStep(conversation, params) {
           patch.end_date_till = shiftIsoDate(patch.start_date, nights);
         }
       }
-      patch.flex_dates = 7;
+      patch.flex_dates = MAX_FLEX_DATES;
       break;
     default:
       exhausted = true;

@@ -134,6 +134,9 @@ async function startSearch(searchParams) {
       clean[key] = normalized[key];
     }
   }
+  if (String(clean.kids || '0') === '0') {
+    delete clean.kids_ages;
+  }
   if (!clean.from_city && clean.from_country) {
     clean.from_city = 'Moscow';
   }

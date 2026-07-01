@@ -94,6 +94,15 @@ function formatDateYmd(date) {
 
 const INVALID_FROM_CITY = /вариант|лучше|какой|этих|отел|найти|интернет|показан|списк/i;
 
+/** Totus /start-search accepts flex_dates 0–6; 7+ returns HTTP 500. */
+const MAX_FLEX_DATES = 6;
+
+function clampFlexDates(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 2;
+  return Math.min(MAX_FLEX_DATES, Math.max(0, Math.round(n)));
+}
+
 function normalizeFromCity(value) {
   if (!value || typeof value !== 'string') return value;
   const key = value.trim().toLowerCase();
@@ -184,6 +193,9 @@ function normalizeSearchParamsForApi(params = {}) {
   if (p.kids !== undefined && p.kids !== '') {
     p.kids = String(p.kids);
   }
+  if (p.flex_dates !== undefined && p.flex_dates !== '') {
+    p.flex_dates = clampFlexDates(p.flex_dates);
+  }
 
   return p;
 }
@@ -195,6 +207,8 @@ module.exports = {
   normalizeSearchParamsForApi,
   isCountryPlaceholderToCity,
   isDepartureCityOnlyText,
+  clampFlexDates,
+  MAX_FLEX_DATES,
   applyCountryDefaultCity,
   COUNTRY_DEFAULT_CITY,
   COUNTRY_QUERY_ALIASES,
