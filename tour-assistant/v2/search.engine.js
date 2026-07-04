@@ -9,6 +9,24 @@ const {
   appendEpisodicEvent,
 } = require('./conversation.health');
 const { resetEscalation } = require('./escalation.engine');
+const { formatDateRu } = require('./destination.labels');
+
+function buildDateShiftUserNote(originalDate, shiftedDate, { foundOnShift = false } = {}) {
+  const origRu = formatDateRu(originalDate);
+  const shiftRu = formatDateRu(shiftedDate);
+  if (!origRu || !shiftRu || originalDate === shiftedDate) return '';
+
+  if (foundOnShift) {
+    return (
+      `На ${origRu} туров не было — показываю варианты с вылетом ${shiftRu}. ` +
+      `Если хотите именно ${origRu}, напишите — поищу ещё раз ближе к вашей дате.`
+    );
+  }
+  return (
+    `На ${origRu} туров не нашёл — также проверил ${shiftRu} (сдвиг на неделю). ` +
+    `Оба варианта без подходящих предложений по вашим фильтрам.`
+  );
+}
 
 async function executeSearch(
   conversation,
@@ -49,16 +67,23 @@ async function executeSearch(
       actualMinPrice,
       catalogLimited:
         !(hotels || []).length && isLimitedPackageDestination(conversation.searchParams),
+      mealFilterBlocked:
+        !(hotels || []).length &&
+        /^(UAI|AI)$/i.test(String(conversation.searchParams?.filter_meals || '')),
     });
 
     const originalDate = conversation.meta?.original_start_date;
     const shiftedDate = conversation.searchParams?.start_date;
-    if ((hotels || []).length && originalDate && shiftedDate && originalDate !== shiftedDate) {
-      const { formatDateRu } = require('./destination.labels');
-      const origRu = formatDateRu(originalDate);
-      const shiftRu = formatDateRu(shiftedDate);
-      if (origRu && shiftRu) {
-        content = `На ${origRu} туров не было — показываю варианты с вылетом ${shiftRu}. Если хотите именно ${origRu}, напишите — поищу ещё раз ближе к вашей дате.\n\n${content}`;
+    const dateWasShifted =
+      originalDate && shiftedDate && originalDate !== shiftedDate;
+
+    if ((hotels || []).length && dateWasShifted) {
+      const note = buildDateShiftUserNote(originalDate, shiftedDate, { foundOnShift: true });
+      if (note) content = `${note}\n\n${content}`;
+    } else if (!(hotels || []).length && dateWasShifted) {
+      const note = buildDateShiftUserNote(originalDate, shiftedDate, { foundOnShift: false });
+      if (note && !content.includes(formatDateRu(originalDate))) {
+        content = `${note}\n\n${content}`;
       }
     } else if (escalationNote && (hotels || []).length) {
       content = `${escalationNote}\n\n${content}`;
@@ -86,7 +111,7 @@ async function executeSearch(
           ? 'budget_exceeded'
           : 'no_results';
     recordSearchOutcome(conversation, outcome);
-    if ((hotels || []).length > 0) {
+    if ((hotels || []).length > 0 || conversation.meta?.original_start_date) {
       resetEscalation(conversation);
     }
     appendEpisodicEvent(conversation, {

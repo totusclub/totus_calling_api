@@ -68,22 +68,25 @@ function applyEscalationStep(conversation, params) {
   };
 }
 
+/** Restore the user's own start_date after a temporary escalation shift. */
+function restoreClientSearchDate(conversation) {
+  if (!conversation.meta) return false;
+  const original = conversation.meta.original_start_date;
+  if (!original) return false;
+  const sp = conversation.searchParams;
+  if (sp?.start_date && sp.start_date !== original) {
+    sp.start_date = original;
+    delete sp.start_date_from;
+    delete sp.end_date_till;
+  }
+  delete conversation.meta.original_start_date;
+  return true;
+}
+
 function resetEscalation(conversation) {
   if (!conversation.meta) return;
   conversation.meta.escalation_level = 0;
-
-  // Restore the client's requested date after an escalation date-shift so
-  // every future search anchors back to the day the user actually asked for.
-  const original = conversation.meta.original_start_date;
-  if (original) {
-    const sp = conversation.searchParams;
-    if (sp?.start_date && sp.start_date !== original) {
-      sp.start_date = original;
-      delete sp.start_date_from;
-      delete sp.end_date_till;
-    }
-    delete conversation.meta.original_start_date;
-  }
+  restoreClientSearchDate(conversation);
 }
 
 function getEscalationPreface(level) {
@@ -93,6 +96,7 @@ function getEscalationPreface(level) {
 module.exports = {
   applyEscalationStep,
   resetEscalation,
+  restoreClientSearchDate,
   getEscalationPreface,
   shiftIsoDate,
 };

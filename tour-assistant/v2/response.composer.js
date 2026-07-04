@@ -238,14 +238,17 @@ function composeNoResultsAdvice(params, {
   hotelOverBudget = false,
   actualMinPrice = null,
   catalogLimited = false,
+  mealFilterBlocked = false,
 } = {}) {
   const dest = formatDestinationPoPhrase(params);
+  const dateRu = formatDateRu(params?.start_date);
   const budget = params.filter_price_max
     ? Number(params.filter_price_max).toLocaleString('ru-RU')
     : null;
   const ratingMin = params.filter_rating_min
     ? Number(params.filter_rating_min).toFixed(1)
     : null;
+  const mealCode = String(params.filter_meals || '').toUpperCase();
 
   if (catalogLimited || isLimitedPackageDestination(params)) {
     return composeLimitedCatalogAdvice(params);
@@ -273,8 +276,18 @@ function composeNoResultsAdvice(params, {
     ].join('\n');
   }
 
+  if (mealFilterBlocked && (mealCode === 'UAI' || mealCode === 'AI')) {
+    const mealLabel = mealCode === 'UAI' ? 'ультра всё включено' : 'всё включено';
+    const datePart = dateRu ? ` на вылет ${dateRu}` : '';
+    return [
+      `По ${dest}${datePart} нет туров с питанием «${mealLabel}».`,
+      'Могу показать варианты с другим типом питания или сдвинуть даты — что попробуем?',
+    ].join('\n');
+  }
+
+  const datePart = dateRu ? ` на вылет ${dateRu}` : '';
   const lines = [
-    `К сожалению, по ${dest} сейчас нет подходящих туров.`,
+    `К сожалению, по ${dest}${datePart} сейчас нет подходящих туров.`,
   ];
 
   if (!triedRelaxed) {

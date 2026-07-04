@@ -135,7 +135,7 @@ async function searchWithAutoEscalation(conversation, onChunk) {
 
   const hotels = conversation.results?.hotels || [];
   let content = result?.content || '';
-  if (lastNote && hotels.length && !content.startsWith(lastNote)) {
+  if (lastNote && !content.startsWith(lastNote) && !content.includes(lastNote)) {
     content = `${lastNote}\n\n${content}`;
   }
   const finalMsg = createAssistantMessage({ content, hotels });
