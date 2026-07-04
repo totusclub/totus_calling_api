@@ -3,11 +3,9 @@ const { TOTUS_API_BASE_URL } = require('./config');
 const { isDepartureCityOnlyText } = require('./search.params.normalizer');
 const { getCountryPrep, getCountryNom, getCityPrep, getCityNom } = require('./destination.labels');
 const {
-  COUNTRY_DEFAULT_CITY,
   KNOWN_CITY_RESOLVES,
   matchCountryCodeFromText,
   matchCityFromText,
-  getDefaultCityForCountry,
   canonicalizeApiCity,
   normalizeKey,
 } = require('./destination.catalog');
@@ -97,10 +95,7 @@ function extractDestinationQuery(userText) {
 function resolveKnownCountryQuery(query) {
   const code = matchCountryCodeFromText(query);
   if (!code) return null;
-  const defaultCity = getDefaultCityForCountry(code);
-  if (defaultCity) {
-    return buildPatchFromKnownCity({ country: code, city: defaultCity });
-  }
+  // User named only the country — never store a default city or show it in labels.
   const label = getCountryNom(code) || code;
   return {
     kind: 'country',
@@ -199,10 +194,7 @@ function buildPatchFromResult(item) {
   const group = item._group;
 
   if (group === 'countries') {
-    const defaultCity = COUNTRY_DEFAULT_CITY[iso2];
-    if (defaultCity) {
-      return buildPatchFromKnownCity({ country: iso2, city: defaultCity });
-    }
+    // Country match — keep it country-only; API default city is applied only at search time.
     const label = getCountryNom(iso2) || item.name || item.country_name_ru || item.name_en || '';
     return {
       kind: 'country',
