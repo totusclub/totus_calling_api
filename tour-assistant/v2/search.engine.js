@@ -32,7 +32,8 @@ async function executeSearch(
   conversation,
   { isPagination = false, excludeHotelIds = [], escalationNote = '', silent = false } = {},
 ) {
-  conversation.searchParams = syncDestinationLabels(prepareSearchParams(conversation.searchParams));
+  const storedParams = conversation.searchParams || {};
+  const apiParams = syncDestinationLabels(prepareSearchParams({ ...storedParams }));
   conversation.stage = ConversationStage.SEARCHING;
   memory.saveConversation(conversation);
 
@@ -47,7 +48,7 @@ async function executeSearch(
       actualMinPrice,
     } = await hotelSearch.runHotelSearch(
       conversation,
-      conversation.searchParams,
+      apiParams,
       { isPagination, excludeHotelIds },
     );
 
@@ -56,7 +57,7 @@ async function executeSearch(
       (conversation.searchParams?.search_type === 'hotel' ||
         (conversation.searchParams?.hotel_ids?.length > 0));
 
-    let content = composeResultsText(conversation.searchParams, hotels, {
+    let content = composeResultsText(storedParams, hotels, {
       isPagination,
       isHotelSearch,
       triedRelaxed,
@@ -73,7 +74,7 @@ async function executeSearch(
     });
 
     const originalDate = conversation.meta?.original_start_date;
-    const shiftedDate = conversation.searchParams?.start_date;
+    const shiftedDate = apiParams?.start_date;
     const dateWasShifted =
       originalDate && shiftedDate && originalDate !== shiftedDate;
 
@@ -102,7 +103,7 @@ async function executeSearch(
     conversation.results = { hotels: hotels || [] };
     conversation.stage = ConversationStage.RESULTS;
     conversation.searchFailed = false;
-    conversation.lastSearchFingerprint = buildSearchFingerprint(conversation.searchParams);
+    conversation.lastSearchFingerprint = buildSearchFingerprint(storedParams);
 
     const outcome =
       (hotels || []).length > 0
@@ -142,7 +143,7 @@ async function executeSearch(
     conversation.results = { hotels: [] };
     conversation.stage = ConversationStage.RESULTS;
     conversation.searchFailed = true;
-    conversation.lastSearchFingerprint = buildSearchFingerprint(conversation.searchParams);
+    conversation.lastSearchFingerprint = buildSearchFingerprint(storedParams);
     recordSearchOutcome(conversation, 'error');
     appendEpisodicEvent(conversation, {
       type: 'search',

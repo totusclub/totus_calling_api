@@ -95,7 +95,7 @@ function getSearchDestinationLabel(params) {
 }
 
 function sanitizeParamsForUserMessage(params) {
-  return syncDestinationLabels(normalizeSearchParamsForApi(params || {}));
+  return syncDestinationLabels(params || {});
 }
 
 /** «— вылет 19 августа» tail so the client always sees the actual date. */

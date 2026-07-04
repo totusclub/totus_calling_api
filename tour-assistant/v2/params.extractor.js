@@ -60,7 +60,6 @@ const CITY_DESTINATION_ALIASES = {
 };
 
 const {
-  applyCountryDefaultCity,
   matchCountryCodeFromText,
   matchCityFromText,
 } = require('./destination.catalog');
@@ -197,8 +196,7 @@ function applyDestinationFromText(text, patch) {
   const countryCode = matchCountryOnly(text);
   if (countryCode) {
     patch.to_country = countryCode;
-    const withCity = applyCountryDefaultCity({ to_country: countryCode });
-    if (withCity.to_city) patch.to_city = withCity.to_city;
+    // Country only — default resort city is applied at API search time, not stored.
     return true;
   }
   return false;
@@ -735,6 +733,29 @@ function extractFromUserText(text, existing = {}, nextField = null) {
   return patch;
 }
 
+function userExplicitlyRequestedCity(localPatch, userText) {
+  if (localPatch.to_city) return true;
+  if (wantsCountryOnlySearch(userText)) return false;
+  if (localPatch._searchCountryOnly) return false;
+  const { extractExplicitCityName } = require('./destination.resolver');
+  return Boolean(extractExplicitCityName(userText));
+}
+
+function applyStoredDestinationScope(params, conversation, { localPatch, userText, countryChanged }) {
+  if (!conversation.meta) conversation.meta = {};
+
+  if (userExplicitlyRequestedCity(localPatch, userText)) {
+    conversation.meta.user_requested_to_city = true;
+  } else if (countryChanged || (localPatch.to_country && !localPatch.to_city)) {
+    conversation.meta.user_requested_to_city = false;
+    delete params.to_city;
+  }
+
+  if (!conversation.meta.user_requested_to_city && params.to_country) {
+    delete params.to_city;
+  }
+}
+
 function reconcileDestinationAfterExtraction(params, existing, userText, localPatch, aiPatch) {
   const { extractExplicitCityName } = require('./destination.resolver');
   const explicitCity = extractExplicitCityName(userText);
@@ -856,6 +877,12 @@ function applyExtraction(conversation, userText, aiResponse, nextField = null) {
   params = mergeSearchParams(params, localPatch);
   stripAccidentalDepartureDestination(params, previousParams, userText, nextField);
   reconcileDestinationAfterExtraction(params, previousParams, userText, localPatch, aiPatch);
+  applyStoredDestinationScope(params, conversation, {
+    localPatch,
+    userText,
+    countryChanged:
+      Boolean(localPatch.to_country) && localPatch.to_country !== previousParams.to_country,
+  });
 
   const intent = params.search_intent || inferSearchIntentFromParams(params);
   if (intent === 'package') {
@@ -880,7 +907,6 @@ function applyExtraction(conversation, userText, aiResponse, nextField = null) {
   if (localPatch._searchCountryOnly) {
     delete params.to_city;
   }
-  params = applyCountryDefaultCity(params);
   if (params.to_country) {
     const { syncDestinationLabels } = require('./destination.labels');
     Object.assign(params, syncDestinationLabels(params));

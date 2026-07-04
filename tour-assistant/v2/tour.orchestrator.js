@@ -19,7 +19,6 @@ const {
   summarizeKnownParams,
 } = require('./conversation.state');
 const { formatDestinationPoPhrase, formatDestinationSummary, formatDestinationInPhrase, syncDestinationLabels } = require('./destination.labels');
-const { applyCountryDefaultCity } = require('./destination.catalog');
 const { composeLimitedCatalogAdvice, isLimitedPackageDestination } = require('./response.composer');
 const { extractDestinationQuery, extractExplicitCityName, resolveDestinationByText } = require('./destination.resolver');
 const { applyExtraction, mergeSearchParams } = require('./params.extractor');
@@ -122,7 +121,6 @@ async function searchWithAutoEscalation(conversation, onChunk) {
     conversation.searchParams = syncDestinationLabels(conversation.searchParams);
     resetSearchSession(conversation);
     conversation.stage = ConversationStage.READY_TO_SEARCH;
-    conversation.searchParams = prepareSearchParams(conversation.searchParams);
     appendEpisodicEvent(conversation, { type: 'escalation', level, patch });
 
     result = await executeSearch(conversation, {
@@ -275,9 +273,10 @@ async function enrichDestinationFromApi(
   const { kind, ...patch } = resolved;
   conversation.searchParams = syncDestinationLabels(mergeSearchParams(params, patch));
   if (kind === 'country') {
-    conversation.searchParams = syncDestinationLabels(
-      applyCountryDefaultCity(conversation.searchParams),
-    );
+    if (!conversation.meta) conversation.meta = {};
+    conversation.meta.user_requested_to_city = false;
+    delete conversation.searchParams.to_city;
+    conversation.searchParams = syncDestinationLabels(conversation.searchParams);
   }
 }
 
@@ -721,7 +720,6 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
     }
 
     conversation.stage = ConversationStage.READY_TO_SEARCH;
-    conversation.searchParams = prepareSearchParams(conversation.searchParams);
     memory.saveConversation(conversation);
 
     if (forceEscalation && (conversation.meta?.escalation_level || 0) > 0) {
