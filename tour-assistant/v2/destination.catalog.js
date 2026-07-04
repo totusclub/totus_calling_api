@@ -48,10 +48,11 @@ const COUNTRY_DEFAULT_CITY = {
 };
 
 /**
- * Package /start-search: API returns 500 with default city but works country-only.
- * AM + Yerevan → 500; AM without to_city → OK (hotels still returned).
+ * Package /start-search: search by country only (no to_city).
+ * AM + Yerevan → API 500; AM without to_city → OK.
+ * MV + Male → Male is the airport hub, not a resort; users book «Мальдивы», not «Мале».
  */
-const PACKAGE_COUNTRY_WITHOUT_CITY = new Set(['AM']);
+const PACKAGE_COUNTRY_WITHOUT_CITY = new Set(['AM', 'MV']);
 
 /** Russian / English country names → ISO code (incl. common cases). */
 const COUNTRY_QUERY_ALIASES = {

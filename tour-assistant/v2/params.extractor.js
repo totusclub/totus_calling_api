@@ -177,6 +177,16 @@ function matchCountryOnly(text) {
   return matchCountryCodeFromText(text);
 }
 
+/** User wants country-wide search, not a specific city (e.g. «по стране», «не в городе Мале»). */
+function wantsCountryOnlySearch(text) {
+  const t = (text || '').toLowerCase();
+  return (
+    /по\s+стране|в\s+стране|по\s+всей\s+стране|не\s+в\s+городе|не\s+обязательно\s+в|любой\s+курорт|везде\s+в|anywhere\s+in/i.test(
+      t,
+    )
+  );
+}
+
 function applyDestinationFromText(text, patch) {
   const cityDest = matchCityDestination(text);
   if (cityDest) {
@@ -405,6 +415,12 @@ function extractFromUserText(text, existing = {}, nextField = null) {
 
   if (isPostSearchAdvisoryText(text) && isReady(existing)) {
     return extractFilterOnlyPatch(text);
+  }
+
+  if (wantsCountryOnlySearch(text)) {
+    patch._searchCountryOnly = true;
+    const countryCode = matchCountryOnly(text) || existing.to_country;
+    if (countryCode) patch.to_country = countryCode;
   }
 
   Object.assign(patch, extractSearchIntent(text, existing, nextField));
@@ -860,6 +876,14 @@ function applyExtraction(conversation, userText, aiResponse, nextField = null) {
   const { isCountryPlaceholderToCity } = require('./search.params.normalizer');
   if (params.to_city && isCountryPlaceholderToCity(params.to_city, params.to_country)) {
     delete params.to_city;
+  }
+  if (localPatch._searchCountryOnly) {
+    delete params.to_city;
+  }
+  params = applyCountryDefaultCity(params);
+  if (params.to_country) {
+    const { syncDestinationLabels } = require('./destination.labels');
+    Object.assign(params, syncDestinationLabels(params));
   }
   if (params.filter_rating_min) {
     params.hotel_name = '';
