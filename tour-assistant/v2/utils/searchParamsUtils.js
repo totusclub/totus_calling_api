@@ -14,7 +14,7 @@ function mergeSearchParamsFromHistory(conversationHistory) {
     hotel_ids: [],
     page_number: 1,
     page_limit: 3,
-    sort_by: 'relevance',
+    sort_by: 'price,asc',
   };
 
   for (const msg of conversationHistory || []) {

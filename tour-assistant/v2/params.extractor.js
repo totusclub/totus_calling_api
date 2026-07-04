@@ -206,7 +206,7 @@ function normalizeSearchParams(params = {}) {
   if (!p.search_type) p.search_type = 'package';
   if (!p.page_number) p.page_number = 1;
   if (!p.page_limit) p.page_limit = 3;
-  if (!p.sort_by) p.sort_by = 'relevance';
+  if (!p.sort_by) p.sort_by = 'price,asc';
   return p;
 }
 
@@ -529,7 +529,26 @@ function extractFromUserText(text, existing = {}, nextField = null) {
     patch.start_date = normalizeStartDate(`${targetYear}-${month}-${day}`);
   };
 
-  if (dateMatch) {
+  // «с 15 по 30 августа» / «15 августа по 30 августа» → start_date + nights
+  const MONTH_RE = '(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)';
+  const rangeMatch = t.match(
+    new RegExp(`(?:с\\s+)?(\\d{1,2})\\s*(?:${MONTH_RE})?\\s+по\\s+(\\d{1,2})\\s*${MONTH_RE}`),
+  );
+  if (rangeMatch) {
+    const day1 = parseInt(rangeMatch[1], 10);
+    const month1 = rangeMatch[2] || rangeMatch[4];
+    const day2 = parseInt(rangeMatch[3], 10);
+    const month2 = rangeMatch[4];
+    applyMonthDay(day1, month1);
+    if (patch.start_date) {
+      const m1 = parseInt(MONTH_MAP[month1], 10);
+      const m2 = parseInt(MONTH_MAP[month2], 10);
+      let nights = m1 === m2 ? day2 - day1 : Math.round(
+        (new Date(2026, m2 - 1, day2) - new Date(2026, m1 - 1, day1)) / 86400000,
+      );
+      if (nights > 0 && nights <= 30) patch.nights = nights;
+    }
+  } else if (dateMatch) {
     applyMonthDay(dateMatch[1], dateMatch[2]);
   } else if (monthFirstMatch) {
     applyMonthDay(monthFirstMatch[2], monthFirstMatch[1]);
@@ -622,7 +641,8 @@ function extractFromUserText(text, existing = {}, nextField = null) {
   const intent =
     patch.search_intent || existing.search_intent || inferSearchIntentFromParams({ ...existing, ...patch });
   const explicitHotel =
-    /\b(отель|hotel)\b/i.test(t) || /hilton|marriott|hyatt|sheraton|radisson|rixos/i.test(t);
+    /\b(отель|hotel)\b/i.test(t) ||
+    /hilton|marriott|hyatt|sheraton|radisson|rixos|riu\b|titanic|kempinski|barcelo|swissotel|movenpick|voyage|maxx royal|regnum/i.test(t);
 
   if (
     hotelName &&
@@ -636,7 +656,18 @@ function extractFromUserText(text, existing = {}, nextField = null) {
     patch.search_type = 'hotel';
   }
 
-  if (nextField === 'destination' && trimmed.length >= 2 && !patch.to_country && !patch.hotel_name) {
+  const looksLikeDateOrNumber =
+    Boolean(patch.start_date) ||
+    /^\d/.test(trimmed) ||
+    /^(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)/i.test(trimmed);
+
+  if (
+    nextField === 'destination' &&
+    trimmed.length >= 2 &&
+    !patch.to_country &&
+    !patch.hotel_name &&
+    !looksLikeDateOrNumber
+  ) {
     if (!applyDestinationFromText(trimmed, patch)) {
       patch.to_city = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
     }
@@ -747,7 +778,7 @@ function clearStaleFiltersOnDestinationChange(params, userText, localPatch, aiPa
   }
   if (!mapRatingFilter(userText) && !localPatch.filter_rating_min && !aiPatch.filter_rating_min) {
     delete params.filter_rating_min;
-    if (params.sort_by === 'rating,desc') params.sort_by = 'relevance';
+    if (params.sort_by === 'rating,desc') params.sort_by = 'price,asc';
   }
   delete params.filter_line;
   delete params.filter_beach_surface;
@@ -764,12 +795,20 @@ function extractFromAiResponse(aiResponse) {
   return {};
 }
 
-function stripAccidentalDepartureDestination(params, userText, nextField) {
+function stripAccidentalDepartureDestination(params, previousParams, userText, nextField) {
   const { isDepartureCityOnlyText } = require('./search.params.normalizer');
   const { extractDestinationQuery } = require('./destination.resolver');
   const hasExplicitDest = Boolean(extractDestinationQuery(userText));
+  const hadDestinationBefore = Boolean(previousParams?.to_country);
 
-  if (nextField === 'from_city' && isDepartureCityOnlyText(userText) && !hasExplicitDest) {
+  // «москва» as a reply to the from_city question must never BECOME the
+  // destination — but it must not erase a destination chosen earlier either.
+  if (
+    nextField === 'from_city' &&
+    isDepartureCityOnlyText(userText) &&
+    !hasExplicitDest &&
+    !hadDestinationBefore
+  ) {
     delete params.to_country;
     delete params.to_city;
     delete params.destination_label;
@@ -780,7 +819,8 @@ function stripAccidentalDepartureDestination(params, userText, nextField) {
     params.to_country === 'RU' &&
     params.to_city === 'Moscow' &&
     params.from_city === 'Moscow' &&
-    !hasExplicitDest
+    !hasExplicitDest &&
+    previousParams?.to_country !== 'RU'
   ) {
     delete params.to_country;
     delete params.to_city;
@@ -798,7 +838,7 @@ function applyExtraction(conversation, userText, aiResponse, nextField = null) {
   // Local rules (regex / aliases) override AI extraction for the same fields.
   params = mergeSearchParams(params, aiPatch);
   params = mergeSearchParams(params, localPatch);
-  stripAccidentalDepartureDestination(params, userText, nextField);
+  stripAccidentalDepartureDestination(params, previousParams, userText, nextField);
   reconcileDestinationAfterExtraction(params, previousParams, userText, localPatch, aiPatch);
 
   const intent = params.search_intent || inferSearchIntentFromParams(params);

@@ -6,6 +6,7 @@ const {
   formatDestinationInPhrase,
   formatDestinationPoPhrase,
   formatPackageResultInPhrase,
+  formatDateRu,
   syncDestinationLabels,
   isHotelSearch: isHotelDestinationSearch,
   isPackageSearchParams,
@@ -97,7 +98,21 @@ function sanitizeParamsForUserMessage(params) {
   return syncDestinationLabels(normalizeSearchParamsForApi(params || {}));
 }
 
-function composeResultsCountMessage(params, count, { isPagination = false } = {}) {
+/** «— вылет 19 августа» tail so the client always sees the actual date. */
+function formatDepartureTail(params) {
+  const dateRu = formatDateRu(params?.start_date);
+  return dateRu ? ` — вылет ${dateRu}` : '';
+}
+
+function formatCheapestTail(hotels) {
+  const prices = (hotels || [])
+    .map((h) => Number(h.room_price ?? h.min_price ?? (h.hotel || {}).min_price))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (!prices.length) return '';
+  return `, от ${Math.round(Math.min(...prices)).toLocaleString('ru-RU')} ₽`;
+}
+
+function composeResultsCountMessage(params, count, { isPagination = false, hotels = [] } = {}) {
   if (count <= 0) {
     return isPagination
       ? 'Больше вариантов по этим параметрам нет — могу предложить другие даты или направление.'
@@ -112,10 +127,10 @@ function composeResultsCountMessage(params, count, { isPagination = false } = {}
   const prefix = isPagination ? 'Нашёл ещё' : 'Нашёл';
   const dest = getSearchDestinationLabel(params);
   const destPart = dest ? ` в ${dest}` : '';
-  return `${prefix} ${count} ${label}${destPart}.`;
+  return `${prefix} ${count} ${label}${destPart}${formatDepartureTail(params)}${formatCheapestTail(hotels)}.`;
 }
 
-function composeRatingFilterResultMessage(params, count, { isPagination = false, ratingFallback = false } = {}) {
+function composeRatingFilterResultMessage(params, count, { isPagination = false, ratingFallback = false, hotels = [] } = {}) {
   if (count <= 0) return null;
 
   const requested = params.filter_rating_min
@@ -125,14 +140,15 @@ function composeRatingFilterResultMessage(params, count, { isPagination = false,
   const prefix = isPagination ? 'Нашёл ещё' : 'Нашёл';
   const dest = getSearchDestinationLabel(params);
   const destPart = dest ? ` в ${dest}` : '';
+  const dateTail = formatDepartureTail(params);
 
   if (ratingFallback && requested) {
-    return `Точных отелей с рейтингом ${requested} не нашёл — показываю лучшие по рейтингу. ${prefix} ${count} ${label}${destPart}.`;
+    return `Точных отелей с рейтингом ${requested} не нашёл — показываю лучшие по рейтингу. ${prefix} ${count} ${label}${destPart}${dateTail}.`;
   }
   if (requested) {
-    return `${prefix} ${count} ${label} с рейтингом от ${requested}${destPart}.`;
+    return `${prefix} ${count} ${label} с рейтингом от ${requested}${destPart}${dateTail}.`;
   }
-  return composeResultsCountMessage(params, count, { isPagination });
+  return composeResultsCountMessage(params, count, { isPagination, hotels });
 }
 
 function composeHotelSearchResultMessage(params, hotels, { isPagination = false } = {}) {
@@ -145,13 +161,14 @@ function composeHotelSearchResultMessage(params, hotels, { isPagination = false 
     params.hotel_name ||
     'отелю';
   const prefix = isPagination ? 'Нашёл ещё' : 'Нашёл';
+  const dateTail = formatDepartureTail(params);
 
   if (count === 1) {
-    return `${prefix} тур по отелю ${name}.`;
+    return `${prefix} тур по отелю ${name}${dateTail}${formatCheapestTail(hotels)}.`;
   }
 
   const label = pluralizeRu(count, ['тур', 'тура', 'туров']);
-  return `${prefix} ${count} ${label} по отелю ${name}.`;
+  return `${prefix} ${count} ${label} по отелю ${name}${dateTail}${formatCheapestTail(hotels)}.`;
 }
 
 function composeResultsIntro(params, hotels, {
@@ -169,7 +186,7 @@ function composeResultsIntro(params, hotels, {
       ? Number(params.filter_price_max).toLocaleString('ru-RU')
       : null;
     const intro = composeHotelSearchResultMessage(params, hotels, { isPagination }) ||
-      composeResultsCountMessage(params, count, { isPagination });
+      composeResultsCountMessage(params, count, { isPagination, hotels });
     return [
       `Минимальная цена — от ${Math.round(actualMinPrice).toLocaleString('ru-RU')} ₽${budget ? ` (ваш бюджет до ${budget} ₽)` : ''}.`,
       intro,
@@ -177,14 +194,14 @@ function composeResultsIntro(params, hotels, {
   }
 
   if (hasRatingFilter && count > 0) {
-    return composeRatingFilterResultMessage(params, count, { isPagination, ratingFallback });
+    return composeRatingFilterResultMessage(params, count, { isPagination, ratingFallback, hotels });
   }
 
   if (isPagination) {
     if (isHotelSearch && count > 0) {
       return composeHotelSearchResultMessage(params, hotels, { isPagination: true });
     }
-    const countMessage = composeResultsCountMessage(params, count, { isPagination: true });
+    const countMessage = composeResultsCountMessage(params, count, { isPagination: true, hotels });
     if (countMessage) return countMessage;
   }
 
@@ -193,7 +210,7 @@ function composeResultsIntro(params, hotels, {
   }
 
   if (count > 0) {
-    const countMessage = composeResultsCountMessage(params, count, { isPagination: false });
+    const countMessage = composeResultsCountMessage(params, count, { isPagination: false, hotels });
     if (countMessage) return countMessage;
   }
 
@@ -211,7 +228,7 @@ function composeResultsIntro(params, hotels, {
       : 'По этим параметрам вариантов пока нет. Уточните даты или направление — подберу альтернативу.';
   }
 
-  return composeResultsCountMessage(params, count, { isPagination: false });
+  return composeResultsCountMessage(params, count, { isPagination: false, hotels });
 }
 
 function composeNoResultsAdvice(params, {
@@ -307,9 +324,10 @@ function composeResultsText(params, hotels, options = {}) {
       return composeRatingFilterResultMessage(safeParams, count, {
         isPagination: true,
         ratingFallback: options.ratingFallback,
+        hotels,
       });
     }
-    return composeResultsCountMessage(safeParams, count, { isPagination: true });
+    return composeResultsCountMessage(safeParams, count, { isPagination: true, hotels });
   }
 
   if (!count) {

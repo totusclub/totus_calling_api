@@ -24,7 +24,7 @@ const DEFAULT_SEARCH_PARAMS = {
   destination_label_prep: '',
   page_number: 1,
   page_limit: 3,
-  sort_by: 'relevance',
+  sort_by: 'price,asc',
 };
 
 function createEmptyConversation({ userId, title } = {}) {

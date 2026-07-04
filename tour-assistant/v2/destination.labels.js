@@ -205,6 +205,23 @@ function formatDestinationPoPhrase(params) {
   return phrase || 'этому направлению';
 }
 
+const MONTHS_RU_GEN = [
+  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+];
+
+/** «2026-08-19» → «19 августа» (with year only if it differs from current). */
+function formatDateRu(isoDate) {
+  const m = String(isoDate || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return '';
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12) return '';
+  const base = `${day} ${MONTHS_RU_GEN[month - 1]}`;
+  return year !== new Date().getFullYear() ? `${base} ${year}` : base;
+}
+
 module.exports = {
   getCountryNom,
   getCountryPrep,
@@ -216,6 +233,7 @@ module.exports = {
   formatDestinationInPhrase,
   formatDestinationPoPhrase,
   formatPackageResultInPhrase,
+  formatDateRu,
   syncDestinationLabels,
   isHotelSearch,
   isPackageSearchParams,

@@ -73,7 +73,9 @@ function getCollectionSteps(searchParams) {
   if (kidsCount !== null && kidsCount > 0) {
     steps.push('kids_ages');
   }
-  steps.push('filter_price_max', 'filter_meals');
+  // Budget is optional: results are sorted cheapest-first, so the client
+  // always sees the lowest price without being forced to name a limit.
+  steps.push('filter_meals');
   return steps;
 }
 

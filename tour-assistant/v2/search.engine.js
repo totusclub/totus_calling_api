@@ -12,7 +12,7 @@ const { resetEscalation } = require('./escalation.engine');
 
 async function executeSearch(
   conversation,
-  { isPagination = false, excludeHotelIds = [], escalationNote = '' } = {},
+  { isPagination = false, excludeHotelIds = [], escalationNote = '', silent = false } = {},
 ) {
   conversation.searchParams = syncDestinationLabels(prepareSearchParams(conversation.searchParams));
   conversation.stage = ConversationStage.SEARCHING;
@@ -51,15 +51,28 @@ async function executeSearch(
         !(hotels || []).length && isLimitedPackageDestination(conversation.searchParams),
     });
 
-    if (escalationNote && (hotels || []).length) {
+    const originalDate = conversation.meta?.original_start_date;
+    const shiftedDate = conversation.searchParams?.start_date;
+    if ((hotels || []).length && originalDate && shiftedDate && originalDate !== shiftedDate) {
+      const { formatDateRu } = require('./destination.labels');
+      const origRu = formatDateRu(originalDate);
+      const shiftRu = formatDateRu(shiftedDate);
+      if (origRu && shiftRu) {
+        content = `На ${origRu} туров не было — показываю варианты с вылетом ${shiftRu}. Если хотите именно ${origRu}, напишите — поищу ещё раз ближе к вашей дате.\n\n${content}`;
+      }
+    } else if (escalationNote && (hotels || []).length) {
       content = `${escalationNote}\n\n${content}`;
     }
 
-    const resultsMsg = createAssistantMessage({
-      content,
-      hotels: hotels || [],
-    });
-    conversation.messages.push(resultsMsg);
+    // silent: caller composes and pushes the single final message itself
+    // (prevents intermediate replies that later get replaced in the UI)
+    if (!silent) {
+      const resultsMsg = createAssistantMessage({
+        content,
+        hotels: hotels || [],
+      });
+      conversation.messages.push(resultsMsg);
+    }
 
     conversation.results = { hotels: hotels || [] };
     conversation.stage = ConversationStage.RESULTS;
@@ -89,15 +102,18 @@ async function executeSearch(
       conversation.searchSession.currentPage = conversation.searchParams.page_number;
     }
 
-    return { hotels: hotels || [], error: null };
+    return { hotels: hotels || [], error: null, content };
   } catch (err) {
     console.error('[V2 search.engine] Search failed:', err);
-    const errMsg = createAssistantMessage({
-      content:
-        'Не удалось подобрать варианты. Попробуйте уточнить даты или направление — подберу альтернативу.',
-      hotels: [],
-    });
-    conversation.messages.push(errMsg);
+    const errContent =
+      'Не удалось подобрать варианты. Попробуйте уточнить даты или направление — подберу альтернативу.';
+    if (!silent) {
+      const errMsg = createAssistantMessage({
+        content: errContent,
+        hotels: [],
+      });
+      conversation.messages.push(errMsg);
+    }
     conversation.results = { hotels: [] };
     conversation.stage = ConversationStage.RESULTS;
     conversation.searchFailed = true;
@@ -108,7 +124,7 @@ async function executeSearch(
       outcome: 'error',
       message: err.message,
     });
-    return { hotels: [], error: err };
+    return { hotels: [], error: err, content: errContent };
   } finally {
     memory.saveConversation(conversation);
   }

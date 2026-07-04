@@ -212,7 +212,7 @@ async function getGroupedHotels({ requestId, readyOperators, filterParams }) {
     page_number: pageNumber,
     page_limit: pageLimit,
     offset: (pageNumber - 1) * pageLimit,
-    sort_by: filterParams.sort_by || 'relevance',
+    sort_by: filterParams.sort_by || 'price,asc',
     filter_price_min: filterParams.filter_price_min ?? 0,
     filter_instant_confirm: filterParams.filter_instant_confirm ?? false,
   };
@@ -309,7 +309,7 @@ function buildFilterParams(searchParams) {
   const filterParams = {
     page_number: searchParams.page_number || 1,
     page_limit: searchParams.page_limit || 3,
-    sort_by: searchParams.sort_by || (hasRatingFilter ? 'rating,desc' : 'relevance'),
+    sort_by: searchParams.sort_by || (hasRatingFilter ? 'rating,desc' : 'price,asc'),
     filter_price_min: searchParams.filter_price_min ?? 0,
     filter_instant_confirm: searchParams.filter_instant_confirm ?? false,
     filter_stars: searchParams.filter_stars || '3,4,5',
@@ -494,6 +494,9 @@ async function tryRelaxedSearch(conversation, searchParams, { excludeHotelIds = 
   enriched = applyPriceMaxFilter(enriched, relaxed.filter_price_max);
   enriched = applyMealsFilter(enriched, relaxed.filter_meals);
   enriched = applyRatingMinFilter(enriched, relaxed.filter_rating_min);
+  enriched.sort(
+    (a, b) => (getEffectiveHotelPrice(a) ?? Infinity) - (getEffectiveHotelPrice(b) ?? Infinity),
+  );
 
   if (enriched.length) {
     conversation.searchSession = { requestId, readyOperators, currentPage: 1 };
@@ -552,6 +555,12 @@ async function runHotelSearch(
     enriched = applyRatingMinFilter(enriched, ratingMin);
     if (Number(ratingMin) > 0) {
       enriched.sort((a, b) => getHotelRating(b) - getHotelRating(a));
+    } else {
+      // Cheapest first — the client must always see the lowest available price.
+      enriched.sort(
+        (a, b) =>
+          (getEffectiveHotelPrice(a) ?? Infinity) - (getEffectiveHotelPrice(b) ?? Infinity),
+      );
     }
     return enriched;
   };

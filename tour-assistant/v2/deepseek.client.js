@@ -317,7 +317,7 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
             if (!mergedParams.page_number) mergedParams.page_number = 1;
             // ALWAYS force page_limit to 3 - CRITICAL for consistent pagination
             mergedParams.page_limit = 3;
-            if (!mergedParams.sort_by) mergedParams.sort_by = 'relevance';
+            if (!mergedParams.sort_by) mergedParams.sort_by = 'price,asc';
             
             // For pagination: preserve all filter params from current search
             if (isPagination) {

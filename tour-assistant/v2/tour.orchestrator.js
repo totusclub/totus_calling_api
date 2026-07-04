@@ -26,7 +26,7 @@ const { applyExtraction, mergeSearchParams } = require('./params.extractor');
 const { extractParamsWithAi } = require('./ai.param-extractor');
 const { resolveHotelByName } = require('./hotel.resolver');
 const { executeSearch } = require('./search.engine');
-const { createTextMessage } = require('./dto/messages');
+const { createTextMessage, createAssistantMessage } = require('./dto/messages');
 const { generateCollectionQuestion } = require('./question.composer');
 const { generateDestinationActivitiesAnswer } = require('./destination.info.composer');
 const { generatePostSearchReply, generateHotelComparisonReply } = require('./post.search.composer');
@@ -67,25 +67,20 @@ function resetSearchSession(conversation) {
   conversation.searchParams = mergeSearchParams(conversation.searchParams || {}, { page_number: 1 });
 }
 
-function removeLastAssistantMessage(conversation) {
-  const msgs = conversation?.messages;
-  if (!msgs?.length || msgs[msgs.length - 1].role !== 'assistant') return;
-  msgs.pop();
-}
-
+/**
+ * Runs the search + auto-escalation chain SILENTLY and pushes exactly one
+ * final assistant message. Intermediate replies are never stored, so the
+ * client can never see an answer that later changes or disappears.
+ */
 async function searchWithAutoEscalation(conversation, onChunk) {
-  await executeSearch(conversation, { isPagination: false });
-  let lastMsg = conversation.messages[conversation.messages.length - 1];
-  if (lastMsg?.role === 'assistant' && lastMsg.content) {
-    recordAssistantReply(conversation, lastMsg.content);
-  }
+  let result = await executeSearch(conversation, { isPagination: false, silent: true });
+  let lastNote = '';
 
   while (
     getLastShownHotels(conversation).length === 0 &&
     !conversation.searchFailed &&
     (conversation.meta?.escalation_level || 0) < 4
   ) {
-    removeLastAssistantMessage(conversation);
     const params = conversation.searchParams || {};
     const { patch, level, preface, exhausted } = applyEscalationStep(conversation, params);
 
@@ -112,12 +107,22 @@ async function searchWithAutoEscalation(conversation, onChunk) {
     conversation.searchParams = prepareSearchParams(conversation.searchParams);
     appendEpisodicEvent(conversation, { type: 'escalation', level, patch });
 
-    await executeSearch(conversation, { isPagination: false, escalationNote: preface });
-    lastMsg = conversation.messages[conversation.messages.length - 1];
-    if (lastMsg?.role === 'assistant' && lastMsg.content) {
-      recordAssistantReply(conversation, lastMsg.content);
-    }
+    result = await executeSearch(conversation, {
+      isPagination: false,
+      escalationNote: preface,
+      silent: true,
+    });
+    lastNote = preface;
   }
+
+  const hotels = conversation.results?.hotels || [];
+  let content = result?.content || '';
+  if (lastNote && hotels.length && !content.startsWith(lastNote)) {
+    content = `${lastNote}\n\n${content}`;
+  }
+  const finalMsg = createAssistantMessage({ content, hotels });
+  conversation.messages.push(finalMsg);
+  recordAssistantReply(conversation, content);
 
   memory.saveConversation(conversation);
   const payload = buildApiPayload(conversation);
@@ -457,6 +462,12 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
     }
   }
 
+  // User picked a new date themselves — it becomes the new anchor,
+  // any previously stored escalation date must not overwrite it.
+  if (justReceived.start_date && conversation.meta?.original_start_date) {
+    delete conversation.meta.original_start_date;
+  }
+
   if (justReceived.to_country || justReceived.to_city) {
     const destChanged =
       justReceived.to_country !== paramsBefore.to_country ||
@@ -609,11 +620,23 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
     return payload;
   }
 
+  // «рейтинг не важен» / «без рейтинга» — drop the rating filter and re-search
+  const wantsClearRating =
+    /рейтинг\w*\s*(не\s*важ|неваж|любой|не\s*нужен|убер)|без\s*рейтинг|неважно\s*рейтинг/i.test(
+      userText || '',
+    ) && Boolean(params.filter_rating_min);
+  if (wantsClearRating) {
+    delete conversation.searchParams.filter_rating_min;
+    if (conversation.searchParams.sort_by === 'rating,desc') {
+      conversation.searchParams.sort_by = 'price,asc';
+    }
+  }
+
   if (isReady(params)) {
     const fingerprint = buildSearchFingerprint(params);
     const alreadySearched = conversation.lastSearchFingerprint === fingerprint;
     const wantsRetry = userWantsRetrySearch(userText);
-    const filtersChanged = searchFiltersChanged(justReceived);
+    const filtersChanged = searchFiltersChanged(justReceived) || wantsClearRating;
     const retryAfterNoResults =
       userAsksWhyNoResults(userText) &&
       (conversation.searchFailed || shownCount === 0) &&

@@ -41,6 +41,11 @@ function applyEscalationStep(conversation, params) {
       break;
     case 4:
       if (params.start_date) {
+        // Remember the client's own date so it can be restored later —
+        // the shift is a search fallback, never a permanent change.
+        if (!meta.original_start_date) {
+          meta.original_start_date = params.start_date;
+        }
         patch.start_date = shiftIsoDate(params.start_date, 7);
         patch.start_date_from = patch.start_date;
         if (params.nights) {
@@ -64,8 +69,20 @@ function applyEscalationStep(conversation, params) {
 }
 
 function resetEscalation(conversation) {
-  if (conversation.meta) {
-    conversation.meta.escalation_level = 0;
+  if (!conversation.meta) return;
+  conversation.meta.escalation_level = 0;
+
+  // Restore the client's requested date after an escalation date-shift so
+  // every future search anchors back to the day the user actually asked for.
+  const original = conversation.meta.original_start_date;
+  if (original) {
+    const sp = conversation.searchParams;
+    if (sp?.start_date && sp.start_date !== original) {
+      sp.start_date = original;
+      delete sp.start_date_from;
+      delete sp.end_date_till;
+    }
+    delete conversation.meta.original_start_date;
   }
 }
 
