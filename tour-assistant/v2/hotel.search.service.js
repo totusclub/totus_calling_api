@@ -103,6 +103,29 @@ function applyMealsFilter(hotels, filterMeals) {
   });
 }
 
+/**
+ * Keep only tours departing exactly on the user's date.
+ * Hotel data has a `dates` price map ({'2026-09-20': 285963, ...}) and
+ * `adjacent_tours[].start_date` — a hotel passes if the exact date is bookable.
+ */
+function applyExactDateFilter(hotels, startDate) {
+  const date = String(startDate || '').slice(0, 10);
+  if (!date) return hotels || [];
+  return (hotels || []).filter((hotel) => {
+    const dates = hotel.dates;
+    if (dates && typeof dates === 'object' && dates[date] != null) {
+      const exactPrice = Number(dates[date]);
+      if (Number.isFinite(exactPrice) && exactPrice > 0) {
+        hotel.room_price = exactPrice;
+        hotel.min_price = exactPrice;
+      }
+      return true;
+    }
+    const adjacent = Array.isArray(hotel.adjacent_tours) ? hotel.adjacent_tours : [];
+    return adjacent.some((t) => String(t?.start_date || '').slice(0, 10) === date);
+  });
+}
+
 function excludeHotelsById(hotels, excludeIds = []) {
   if (!excludeIds?.length) return hotels || [];
   const blocked = new Set(excludeIds.map(String));
@@ -151,6 +174,23 @@ async function startSearch(searchParams) {
     return res.data?.request_id;
   } catch (err) {
     const status = err.response?.status;
+
+    // flex_dates=0 is rejected by some operators — retry with a small window;
+    // exact-date results are guaranteed later by applyExactDateFilter.
+    if (status === 500 && Number(clean.flex_dates) === 0) {
+      try {
+        console.warn('[V2 hotel.search] start-search retry flex_dates 0→2 (exact date kept via post-filter)');
+        const res = await api.get('/start-search', { params: { ...clean, flex_dates: 2 } });
+        return res.data?.request_id;
+      } catch (flexErr) {
+        console.error(
+          '[V2 hotel.search] flex retry failed:',
+          flexErr.response?.status,
+          flexErr.response?.data || flexErr.message,
+        );
+      }
+    }
+
     const canRetryWithoutCity =
       status === 500 &&
       clean.to_city &&
@@ -491,7 +531,12 @@ async function collectHotelsFromPages({
 
 async function tryRelaxedSearch(conversation, searchParams, { excludeHotelIds = [] } = {}) {
   const relaxed = { ...searchParams };
-  relaxed.flex_dates = Math.max(Number(relaxed.flex_dates) || 2, 4);
+  // Exact user date — relaxed retry may loosen filters but never the date window.
+  if (conversation?.meta?.user_exact_date) {
+    relaxed.flex_dates = 0;
+  } else {
+    relaxed.flex_dates = Math.max(Number(relaxed.flex_dates) || 2, 4);
+  }
   relaxed.page_number = 1;
   // Keep filter_price_max — never show tours above the user's budget.
 
@@ -512,7 +557,11 @@ async function tryRelaxedSearch(conversation, searchParams, { excludeHotelIds = 
     maxPages: 6,
   });
 
-  let enriched = await enrichHotelsWithRoomOffers(hotels, requestId, relaxed);
+  let candidates = hotels;
+  if (conversation?.meta?.user_exact_date && relaxed.start_date) {
+    candidates = applyExactDateFilter(candidates, relaxed.start_date);
+  }
+  let enriched = await enrichHotelsWithRoomOffers(candidates, requestId, relaxed);
   enriched = applyPriceMaxFilter(enriched, relaxed.filter_price_max);
   enriched = applyMealsFilter(enriched, relaxed.filter_meals);
   enriched = applyRatingMinFilter(enriched, relaxed.filter_rating_min);
@@ -568,10 +617,16 @@ async function runHotelSearch(
   const priceCap = searchParams.filter_price_max;
   const ratingMin = searchParams.filter_rating_min;
 
+  const exactDate = Boolean(conversation?.meta?.user_exact_date) && searchParams.start_date;
+
   const finalizeHotels = async (hotels, requestId, { skipPriceCap = false } = {}) => {
     const cap = skipPriceCap ? '' : priceCap;
     const enrichParams = skipPriceCap ? { ...searchParams, filter_price_max: '' } : searchParams;
-    let enriched = await enrichHotelsWithRoomOffers(hotels, requestId, enrichParams);
+    let candidates = hotels || [];
+    if (exactDate) {
+      candidates = applyExactDateFilter(candidates, searchParams.start_date);
+    }
+    let enriched = await enrichHotelsWithRoomOffers(candidates, requestId, enrichParams);
     enriched = applyPriceMaxFilter(enriched, cap);
     enriched = applyMealsFilter(enriched, searchParams.filter_meals);
     enriched = applyRatingMinFilter(enriched, ratingMin);

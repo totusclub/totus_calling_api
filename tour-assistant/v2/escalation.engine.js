@@ -29,9 +29,14 @@ function applyEscalationStep(conversation, params) {
   const patch = { page_number: 1 };
   let exhausted = false;
 
+  // User asked for an exact departure date — never widen or shift it.
+  const exactDate = Boolean(meta.user_exact_date);
+
   switch (level) {
     case 1:
-      patch.flex_dates = clampFlexDates(Math.max(Number(params.flex_dates) || 2, MAX_FLEX_DATES));
+      if (!exactDate) {
+        patch.flex_dates = clampFlexDates(Math.max(Number(params.flex_dates) || 2, MAX_FLEX_DATES));
+      }
       break;
     case 2:
       patch.filter_meals = '';
@@ -40,6 +45,11 @@ function applyEscalationStep(conversation, params) {
       patch.filter_price_max = '';
       break;
     case 4:
+      if (exactDate) {
+        // Date shifting is forbidden for an exact user date — stop here.
+        exhausted = true;
+        break;
+      }
       if (params.start_date) {
         // Remember the client's own date so it can be restored later —
         // the shift is a search fallback, never a permanent change.

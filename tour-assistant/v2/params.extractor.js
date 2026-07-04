@@ -455,7 +455,12 @@ function extractFromUserText(text, existing = {}, nextField = null) {
     }
   }
   if (nextField === 'from_city') {
-    if (!/^(тур|отель|hotel|package|направлен)/i.test(trimmed)) {
+    const nonCityAnswer =
+      /не\s*важно|неважно|без\s*разниц|вс[её]\s*равно|любой|любого|не\s*знаю|решай|как\s*хочешь|пофиг/i.test(t);
+    if (nonCityAnswer) {
+      // «не важно» is not a departure city — default to Moscow so the API call works.
+      patch.from_city = 'Moscow';
+    } else if (!/^(тур|отель|hotel|package|направлен)/i.test(trimmed)) {
       if (t.includes('москв') || trimmed.toLowerCase() === 'москва') patch.from_city = 'Moscow';
       else if (t.includes('петербург') || t.includes('спб') || trimmed.toLowerCase() === 'санкт-петербург') {
         patch.from_city = 'Saint Petersburg';
@@ -866,6 +871,13 @@ function stripAccidentalDepartureDestination(params, previousParams, userText, n
   }
 }
 
+/** «примерно», «±», «гибкие даты» — user allows searching nearby dates. */
+function userAllowsFlexibleDates(text) {
+  return /примерн|около|плюс[\s-]*минус|±|гибк|любые\s+дат|в\s+районе|раньше\s+или\s+позже|можно\s+сдвинуть/i.test(
+    String(text || ''),
+  );
+}
+
 function applyExtraction(conversation, userText, aiResponse, nextField = null) {
   const previousParams = conversation.searchParams || {};
   let params = { ...previousParams };
@@ -875,6 +887,23 @@ function applyExtraction(conversation, userText, aiResponse, nextField = null) {
   // Local rules (regex / aliases) override AI extraction for the same fields.
   params = mergeSearchParams(params, aiPatch);
   params = mergeSearchParams(params, localPatch);
+
+  // User named a concrete departure date — search exactly that day.
+  // flex_dates stays 0 unless the user explicitly allows nearby dates.
+  const newStartDate = params.start_date && params.start_date !== previousParams.start_date;
+  if (newStartDate) {
+    if (!conversation.meta) conversation.meta = {};
+    if (userAllowsFlexibleDates(userText)) {
+      conversation.meta.user_exact_date = false;
+      if (!params.flex_dates) params.flex_dates = 2;
+    } else {
+      conversation.meta.user_exact_date = true;
+      params.flex_dates = 0;
+    }
+  } else if (userAllowsFlexibleDates(userText) && conversation.meta?.user_exact_date) {
+    conversation.meta.user_exact_date = false;
+    params.flex_dates = 2;
+  }
   stripAccidentalDepartureDestination(params, previousParams, userText, nextField);
   reconcileDestinationAfterExtraction(params, previousParams, userText, localPatch, aiPatch);
   applyStoredDestinationScope(params, conversation, {

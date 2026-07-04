@@ -312,7 +312,10 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
             if (!mergedParams.kids) mergedParams.kids = isPagination ? (currentSearchParams.kids || '0') : '0';
             if (!mergedParams.kids_ages) mergedParams.kids_ages = isPagination ? (currentSearchParams.kids_ages || []) : [];
             if (!mergedParams.search_type) mergedParams.search_type = 'package';
-            if (!mergedParams.flex_dates) mergedParams.flex_dates = isPagination ? (currentSearchParams.flex_dates || 2) : 2;
+            // flex_dates 0 is a valid value (exact user date) — only default when undefined.
+            if (mergedParams.flex_dates === undefined || mergedParams.flex_dates === null || mergedParams.flex_dates === '') {
+                mergedParams.flex_dates = isPagination ? (currentSearchParams.flex_dates ?? 2) : 2;
+            }
             if (!mergedParams.hotel_ids) mergedParams.hotel_ids = [];
             if (!mergedParams.page_number) mergedParams.page_number = 1;
             // ALWAYS force page_limit to 3 - CRITICAL for consistent pagination

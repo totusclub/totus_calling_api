@@ -92,7 +92,8 @@ function formatDateYmd(date) {
   return `${y}-${m}-${d}`;
 }
 
-const INVALID_FROM_CITY = /вариант|лучше|какой|этих|отел|найти|интернет|показан|списк/i;
+const INVALID_FROM_CITY =
+  /вариант|лучше|какой|этих|отел|найти|интернет|показан|списк|не\s*важно|неважно|без\s*разниц|вс[её]\s*равно|любой|любого|не\s*знаю|решай|как\s*хочешь|пофиг|скажи|помоги/i;
 
 /** Totus /start-search accepts flex_dates 0–6; 7+ returns HTTP 500. */
 const MAX_FLEX_DATES = 6;
@@ -111,6 +112,9 @@ function normalizeFromCity(value) {
   for (const [alias, canonical] of Object.entries(FROM_CITY_ALIASES)) {
     if (key.includes(alias)) return canonical;
   }
+  // API expects latin city names — unknown cyrillic values (e.g. «Не важно»,
+  // random phrases) cause /start-search 500. Fall back to Moscow.
+  if (/[а-яё]/i.test(key)) return 'Moscow';
   return value.trim();
 }
 
