@@ -19,6 +19,16 @@ async function streamMessage(req, res) {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
 
+  // Heartbeat keeps the SSE connection alive during long searches so the
+  // client never times out while the backend is still working.
+  const heartbeat = setInterval(() => {
+    try {
+      writeSse(res, SSE_EVENTS.TYPING, { active: true });
+    } catch (_) {
+      clearInterval(heartbeat);
+    }
+  }, 8000);
+
   try {
     writeSse(res, SSE_EVENTS.TYPING, { active: true });
 
@@ -27,9 +37,11 @@ async function streamMessage(req, res) {
       onChunk: ({ event, data }) => writeSse(res, event, data),
     });
 
+    clearInterval(heartbeat);
     writeSse(res, 'final_message', { ok: true, ...payload });
     res.end();
   } catch (error) {
+    clearInterval(heartbeat);
     console.error('[V2] Stream error:', error);
     writeSse(res, SSE_EVENTS.ERROR, {
       message: 'Ой, что-то пошло не так. Попробуйте ещё раз!',

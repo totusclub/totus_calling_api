@@ -76,6 +76,24 @@ async function searchWithAutoEscalation(conversation, onChunk) {
   let result = await executeSearch(conversation, { isPagination: false, silent: true });
   let lastNote = '';
 
+  // Limited-catalog destinations (France, Germany, Italy…): escalation only
+  // repeats the same empty search 4 more times (~minutes of frontend timeout).
+  // Reply immediately with honest catalog advice instead.
+  if (
+    getLastShownHotels(conversation).length === 0 &&
+    !conversation.searchFailed &&
+    isLimitedPackageDestination(conversation.searchParams)
+  ) {
+    const reply = composeLimitedCatalogAdvice(conversation.searchParams);
+    const msg = createTextMessage({ role: 'assistant', content: reply });
+    conversation.messages.push(msg);
+    recordAssistantReply(conversation, reply);
+    memory.saveConversation(conversation);
+    const payload = buildApiPayload(conversation);
+    if (onChunk) onChunk({ event: 'final_message', data: payload });
+    return payload;
+  }
+
   while (
     getLastShownHotels(conversation).length === 0 &&
     !conversation.searchFailed &&

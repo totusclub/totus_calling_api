@@ -185,16 +185,38 @@ async function startSearch(searchParams) {
   }
 }
 
+/** Operator states that will never turn into results — no point waiting. */
+const TERMINAL_OPERATOR_STATES = new Set([
+  'completed',
+  'cached',
+  'no_results',
+  'skipped',
+  'error',
+  'failed',
+]);
+
 async function pollSearchStatus(requestId) {
   const MAX_POLLS = 15;
   for (let i = 0; i < MAX_POLLS; i++) {
     try {
       const res = await api.get('/search-status', { params: { request_id: requestId } });
       const statusMap = res.data?.status || {};
-      const readyOps = Object.entries(statusMap)
+      const entries = Object.entries(statusMap);
+      const readyOps = entries
         .filter(([, s]) => s === 'completed' || s === 'cached')
         .map(([id]) => id);
       if (readyOps.length > 0) return readyOps;
+
+      // All operators answered no_results/skipped/error — the search is over,
+      // waiting the remaining polls would only stall the reply (~45s per cycle).
+      const allTerminal =
+        entries.length > 0 && entries.every(([, s]) => TERMINAL_OPERATOR_STATES.has(s));
+      if (allTerminal) {
+        console.log(
+          `[V2 hotel.search] all ${entries.length} operators terminal with no results — stop polling`,
+        );
+        return [];
+      }
     } catch (err) {
       console.warn('[V2 hotel.search] search-status poll error:', err.message);
     }
