@@ -607,7 +607,31 @@ function extractFromUserText(text, existing = {}, nextField = null) {
   const rangeMatch = t.match(
     new RegExp(`(?:с\\s+)?(\\d{1,2})\\s*(?:${MONTH_RE})?\\s+по\\s+(\\d{1,2})\\s*${MONTH_RE}`),
   );
-  if (rangeMatch) {
+  // «с 26 сент по 6 октября» with abbreviated months
+  const ABBREV_MONTH = '(янв|фев|мар|апр|мая?|июн|июл|авг|сен(?:т)?|окт|ноя|дек)';
+  const abbrevRangeMatch = t.match(
+    new RegExp(`(?:с|от)\\s*(\\d{1,2})\\s*${ABBREV_MONTH}\\s+по\\s*(\\d{1,2})\\s*${ABBREV_MONTH}`, 'iu'),
+  );
+  if (abbrevRangeMatch) {
+    const month1 = MONTH_ABBREV[abbrevRangeMatch[2].toLowerCase()];
+    const month2 = MONTH_ABBREV[abbrevRangeMatch[4].toLowerCase()];
+    if (month1 && month2) {
+      applyMonthDayNum(abbrevRangeMatch[1], month1);
+      if (patch.start_date) {
+        const day1 = parseInt(abbrevRangeMatch[1], 10);
+        const day2 = parseInt(abbrevRangeMatch[3], 10);
+        const m1 = parseInt(month1, 10);
+        const m2 = parseInt(month2, 10);
+        const year = new Date().getFullYear();
+        let nights = m1 === m2
+          ? day2 - day1
+          : Math.round(
+              (new Date(year, m2 - 1, day2) - new Date(year, m1 - 1, day1)) / 86400000,
+            );
+        if (nights > 0 && nights <= 31) patch.nights = nights;
+      }
+    }
+  } else if (rangeMatch) {
     const day1 = parseInt(rangeMatch[1], 10);
     const month1 = rangeMatch[2] || rangeMatch[4];
     const day2 = parseInt(rangeMatch[3], 10);
@@ -980,6 +1004,17 @@ function applyExtraction(conversation, userText, aiResponse, nextField = null) {
     countryChanged:
       Boolean(localPatch.to_country) && localPatch.to_country !== previousParams.to_country,
   });
+
+  const { normalizeHotelNameCandidate } = require('./hotel.resolver');
+  if (
+    params.hotel_name &&
+    previousParams.hotel_name &&
+    normalizeHotelNameCandidate(params.hotel_name).toLowerCase() !==
+      normalizeHotelNameCandidate(previousParams.hotel_name).toLowerCase()
+  ) {
+    params.hotel_ids = [];
+    if (conversation.meta) delete conversation.meta.resolved_hotel_query;
+  }
 
   const intent = params.search_intent || inferSearchIntentFromParams(params);
   if (intent === 'package') {

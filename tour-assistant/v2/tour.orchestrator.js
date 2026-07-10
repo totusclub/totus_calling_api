@@ -23,7 +23,7 @@ const { composeLimitedCatalogAdvice, isLimitedPackageDestination } = require('./
 const { extractDestinationQuery, extractExplicitCityName, resolveDestinationByText } = require('./destination.resolver');
 const { applyExtraction, mergeSearchParams } = require('./params.extractor');
 const { extractParamsWithAi } = require('./ai.param-extractor');
-const { resolveHotelByName } = require('./hotel.resolver');
+const { resolveHotelByName, extractHotelNameFromText, normalizeHotelNameCandidate } = require('./hotel.resolver');
 const { executeSearch } = require('./search.engine');
 const { createTextMessage, createAssistantMessage } = require('./dto/messages');
 const { generateCollectionQuestion } = require('./question.composer');
@@ -296,7 +296,7 @@ function buildApiPayload(conversation) {
   };
 }
 
-async function resolveHotelNames(conversation) {
+async function resolveHotelNames(conversation, userText = '') {
   const params = conversation.searchParams || {};
   if (params.filter_rating_min) {
     const cleared = mergeSearchParams(params, {
@@ -308,6 +308,19 @@ async function resolveHotelNames(conversation) {
     conversation.searchParams = cleared;
     return cleared;
   }
+
+  const freshExtract = userText ? extractHotelNameFromText(userText) : null;
+  if (freshExtract) {
+    const freshNorm = normalizeHotelNameCandidate(freshExtract).toLowerCase();
+    const currentNorm = normalizeHotelNameCandidate(params.hotel_name || '').toLowerCase();
+    if (!currentNorm || freshNorm !== currentNorm) {
+      params.hotel_name = freshExtract;
+      params.hotel_ids = [];
+      if (conversation.meta) delete conversation.meta.resolved_hotel_query;
+      conversation.searchParams = params;
+    }
+  }
+
   if (!params.hotel_name) return params;
 
   const queryKey = String(params.hotel_name).trim().toLowerCase();
@@ -523,7 +536,7 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
     });
   }
 
-  await resolveHotelNames(conversation);
+  await resolveHotelNames(conversation, userText);
   conversation.searchParams = applyDefaults(conversation.searchParams);
   conversation.searchParams = sanitizeFromCity(conversation.searchParams, userText);
   conversation.searchParams = applySemanticDefaults(conversation.searchParams, conversation);

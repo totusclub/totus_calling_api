@@ -473,7 +473,10 @@ async function enrichHotelsWithRoomOffers(hotels, requestId, searchParams) {
     }
 
     const roomOffer = await fetchHotelRoomOffer(requestId, hotelId, searchParams);
-    if (searchParams.filter_meals && !roomOffer) {
+    if (!roomOffer && searchParams.filter_meals) {
+      if (listPrice !== null) {
+        return enrichHotelForClient(hotel, null);
+      }
       return null;
     }
     if (hasCap && roomOffer?.price && Number(roomOffer.price) > cap) {

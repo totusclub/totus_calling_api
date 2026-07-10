@@ -22,6 +22,7 @@ const DATE_TAIL_RE =
 const HOTEL_QUERY_ALIASES = [
   { pattern: /rixos\s+seagate(?:\s+sharm)?/i, query: 'Rixos Premium Seagate' },
   { pattern: /seagate\s+sharm/i, query: 'Rixos Premium Seagate' },
+  { pattern: /rixos\s+шарм(?:\s*эль\s*шейх)?/i, query: 'Rixos Premium Seagate' },
   { pattern: /hilton\s+dubai\s+palm/i, query: 'Hilton Dubai Palm Jumeirah' },
   { pattern: /riu\s+dubai/i, query: 'Riu Dubai' },
   { pattern: /wind\s+of\s+lara/i, query: 'Wind Of Lara Hotel & Spa' },
@@ -130,6 +131,8 @@ function extractHotelNameFromText(text) {
   }
 
   const extractionPatterns = [
+    /(?:хочу|хотел\s+бы)\s+(?:потеплеть|отдохнуть|полететь|вылететь|улететь)\s+(?:в|во)\s+(?:отел[ьяейi]?\s+)?(.+)/iu,
+    /(?:хочу|нужно)\s+(?:вылететь|полететь|улететь)\s+(?:в|во)\s+(?:отел[ьяейi]?\s+)?(.+)/iu,
     /(?:тур|пакет|путёвк[аи]|путевк[аи])\s+(?:в|во)\s+(?:отел[ьяеи]?\s+)?(.+)/iu,
     /(?:найди|найти|покажи|ищу|ищи|подбери|подобрать|хочу|нужен|нужна|интересует|забронир\w*|бронир\w*|забук\w*|book|останов\w*|посел\w*|остановиться|поселиться)\s+(?:мне\s+)?(?:тур\s+)?(?:в|во)\s+(?:отел[ьяеи]?\s+)?(.+)/iu,
     /(?:найди|найти|покажи|ищу|ищи|подбери)\s+(?:мне\s+)?(?:тур\s+)?(?:в|во)\s+(.+)/iu,
@@ -214,6 +217,15 @@ function scoreHotelMatch(query, candidate, hints = {}) {
     if (cTokens.some((ct) => ct === token)) score += 14;
     else if (cTokens.some((ct) => ct.includes(token) || token.includes(ct))) score += 8;
   }
+
+  if (/seagate/i.test(qNorm)) {
+    if (/seagate/i.test(cName)) score += 35;
+    else score -= 30;
+    if (/adults\s+only|только\s+для\s+взросл/i.test(cName)) score -= 45;
+    if (/premium/i.test(cName)) score += 15;
+  }
+  if (/premium/i.test(qNorm) && /premium/i.test(cName)) score += 20;
+  if (/palace/i.test(qNorm) && /palace/i.test(cName)) score += 15;
 
   if (hints.to_country && candidate.iso2 && hints.to_country === candidate.iso2) {
     score += 12;
