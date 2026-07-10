@@ -254,6 +254,68 @@ function pickBestResult(query, results, hints = {}) {
   return bestScore >= 12 ? best : results[0];
 }
 
+/** Level.Travel-style: hotel name → canonical API city + country + labels. */
+function buildDestinationFromHotel(match) {
+  const {
+    canonicalizeApiCity,
+    matchCityFromText,
+    getDefaultCityForCountry,
+  } = require('./destination.catalog');
+  const { normalizeToCity, isCountryPlaceholderToCity } = require('./search.params.normalizer');
+  const { syncDestinationLabels } = require('./destination.labels');
+
+  const iso2 = String(match.iso2 || '').toUpperCase();
+  if (!iso2) return {};
+
+  const cityParts = String(match.city_name || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const candidates = [...cityParts, match.city_name, match.name_en].filter(Boolean);
+
+  let to_city = '';
+  for (const raw of candidates) {
+    const fromCatalog = matchCityFromText(raw);
+    if (fromCatalog?.city) {
+      to_city = canonicalizeApiCity(fromCatalog.city, iso2);
+      break;
+    }
+    const normalized = normalizeToCity(raw, iso2);
+    const canonical = canonicalizeApiCity(normalized, iso2);
+    if (canonical && !isCountryPlaceholderToCity(canonical, iso2)) {
+      to_city = canonical;
+      break;
+    }
+    if (/шарм|sharm/i.test(raw)) {
+      to_city = canonicalizeApiCity('Sharm El Sheikh', iso2);
+      break;
+    }
+    if (/марса|marsa/i.test(raw)) {
+      to_city = canonicalizeApiCity('Marsa Alam', iso2);
+      break;
+    }
+    if (/дуб/i.test(raw) && iso2 === 'AE') {
+      to_city = 'Dubai';
+      break;
+    }
+  }
+
+  if (!to_city) {
+    to_city = getDefaultCityForCountry(iso2) || '';
+  }
+
+  if (iso2 === 'AE' && to_city && !/^(Dubai|Abu Dhabi)$/i.test(to_city)) {
+    const blob = `${to_city} ${candidates.join(' ')}`.toLowerCase();
+    if (/dubai|дуб|jumeirah|джумейр|palm|пальм|deira|дейра|marina|марина|kundu|кунду|lara/i.test(blob)) {
+      to_city = /abu|абу/i.test(blob) ? 'Abu Dhabi' : 'Dubai';
+    }
+  }
+
+  const patch = { to_country: iso2 };
+  if (to_city) patch.to_city = to_city;
+  return syncDestinationLabels(patch);
+}
+
 async function fetchAutocompleteResults(query, fromCity) {
   const res = await api.get('/references/autocomplete_v2', {
     params: {
@@ -294,11 +356,11 @@ async function resolveHotelByName(hotelName, fromCity = 'Moscow', hints = {}) {
 
     if (!bestMatch) return null;
 
+    const destination = buildDestinationFromHotel(bestMatch);
     return {
       hotel_id: String(bestMatch.id),
       hotel_name: bestMatch.name || bestMatch.name_en || normalized,
-      to_country: bestMatch.iso2 || hints.to_country || '',
-      to_city: bestMatch.city_name || bestMatch.country_name_ru || hints.to_city || '',
+      ...destination,
     };
   } catch (err) {
     console.warn('[V2 hotel.resolver] resolve failed:', err.message);
@@ -309,6 +371,7 @@ async function resolveHotelByName(hotelName, fromCity = 'Moscow', hints = {}) {
 module.exports = {
   extractHotelNameFromText,
   resolveHotelByName,
+  buildDestinationFromHotel,
   containsHotelBrand,
   isLikelyHotelName,
   normalizeHotelNameCandidate,

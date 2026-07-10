@@ -841,6 +841,13 @@ function userExplicitlyRequestedCity(localPatch, userText) {
 function applyStoredDestinationScope(params, conversation, { localPatch, userText, countryChanged }) {
   if (!conversation.meta) conversation.meta = {};
 
+  if (params.hotel_name || params.hotel_ids?.length || conversation.meta.city_from_hotel) {
+    if (params.to_city) {
+      conversation.meta.user_requested_to_city = true;
+    }
+    return;
+  }
+
   if (userExplicitlyRequestedCity(localPatch, userText)) {
     conversation.meta.user_requested_to_city = true;
   } else if (countryChanged || (localPatch.to_country && !localPatch.to_city)) {

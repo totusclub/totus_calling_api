@@ -358,9 +358,15 @@ async function resolveHotelNames(conversation, userText = '') {
     hotel_name: resolved.hotel_name,
     search_type: wantsPackage ? 'package' : 'hotel',
     search_intent: wantsPackage ? 'package' : 'hotel',
-    to_country: params.to_country || resolved.to_country,
-    to_city: params.to_city || resolved.to_city,
+    to_country: resolved.to_country || params.to_country,
+    to_city: resolved.to_city || params.to_city,
+    destination_label: resolved.destination_label || params.destination_label,
+    destination_label_prep: resolved.destination_label_prep || params.destination_label_prep,
   });
+  conversation.meta.city_from_hotel = true;
+  if (resolved.to_city) {
+    conversation.meta.user_requested_to_city = true;
+  }
   return conversation.searchParams;
 }
 
