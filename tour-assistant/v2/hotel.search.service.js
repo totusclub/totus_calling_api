@@ -165,7 +165,9 @@ async function startSearch(searchParams) {
     clean.from_city = 'Moscow';
   }
   if (clean.hotel_ids?.length) {
-    clean.search_type = 'hotel';
+    const wantsPackage =
+      searchParams.search_type === 'package' || searchParams.search_intent === 'package';
+    clean.search_type = wantsPackage ? 'package' : 'hotel';
   }
 
   try {
@@ -308,7 +310,13 @@ async function getGroupedHotels({ requestId, readyOperators, filterParams }) {
       page_limit: params.page_limit,
     });
     const res = await api.get('/grouped-hotels', { params });
-    const hotels = res.data?.hotels || [];
+    let hotels = res.data?.hotels || [];
+    if (!hotels.length && res.data?.filtered_results?.length) {
+      hotels = res.data.filtered_results;
+      console.log(
+        `[V2 hotel.search] using filtered_results: ${hotels.length} hotels (hotels array was empty)`,
+      );
+    }
     const filtered = applyStarsFilter(hotels, params.filter_stars);
     if (filtered.length !== hotels.length) {
       console.log(
@@ -410,7 +418,14 @@ function enrichHotelForClient(hotel, roomOffer = null) {
     min_price: price,
     room_type: roomOffer?.room_type || hotel.room_type || '',
     meal_type: roomOffer?.meal_type || hotel.meal_type || '',
+    meal_id: roomOffer?.meal_id || hotel.meal_id || '',
+    room_id: roomOffer?.room_id || hotel.room_id || '',
+    room_listing_id: roomOffer?.room_listing_id || hotel.room_listing_id || '',
+    offer_id: roomOffer?.offer_id || hotel.offer_id || '',
+    operator_id: roomOffer?.operator_id || hotel.operator_id || '',
+    operator_name: roomOffer?.operator_name || hotel.operator_name || '',
     room_price: roomOffer?.price || price,
+    start_date: roomOffer?.start_date || '',
     images: data.images || hotel.images,
     description: data.description || data.short_description || '',
     amenities: (Array.isArray(data.features)

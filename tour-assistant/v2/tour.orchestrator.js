@@ -308,15 +308,20 @@ async function resolveHotelNames(conversation) {
     conversation.searchParams = cleared;
     return cleared;
   }
-  if (!params.hotel_name || params.hotel_ids?.length) return params;
-  if (params.search_intent === 'package' || params.search_type === 'package') {
-    const cleared = { ...params };
-    delete cleared.hotel_name;
-    conversation.searchParams = cleared;
-    return cleared;
+  if (!params.hotel_name) return params;
+
+  const queryKey = String(params.hotel_name).trim().toLowerCase();
+  if (params.hotel_ids?.length) {
+    if (conversation.meta?.resolved_hotel_query === queryKey) {
+      return params;
+    }
+    conversation.searchParams = mergeSearchParams(params, { hotel_ids: [] });
   }
 
-  const resolved = await resolveHotelByName(params.hotel_name, params.from_city || 'Moscow');
+  const resolved = await resolveHotelByName(params.hotel_name, params.from_city || 'Moscow', {
+    to_country: params.to_country,
+    to_city: params.to_city,
+  });
   if (!resolved) {
     conversation.hotelResolveAttempts = (conversation.hotelResolveAttempts || 0) + 1;
     if (conversation.hotelResolveAttempts >= 2) {
@@ -324,18 +329,22 @@ async function resolveHotelNames(conversation) {
         hotel_name: '',
         search_intent: 'package',
         search_type: 'package',
-        to_city: params.to_city || params.hotel_name,
       });
     }
     return conversation.searchParams;
   }
 
   conversation.hotelResolveAttempts = 0;
+  conversation.meta = conversation.meta || {};
+  conversation.meta.resolved_hotel_query = queryKey;
 
+  const wantsPackage =
+    params.search_intent === 'package' || params.search_type === 'package';
   conversation.searchParams = mergeSearchParams(params, {
     hotel_ids: [resolved.hotel_id],
     hotel_name: resolved.hotel_name,
-    search_type: 'hotel',
+    search_type: wantsPackage ? 'package' : 'hotel',
+    search_intent: wantsPackage ? 'package' : 'hotel',
     to_country: params.to_country || resolved.to_country,
     to_city: params.to_city || resolved.to_city,
   });

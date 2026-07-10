@@ -22,6 +22,23 @@ const MONTH_MAP = {
   декабря: '12',
 };
 
+const MONTH_ABBREV = {
+  янв: '01',
+  фев: '02',
+  мар: '03',
+  апр: '04',
+  май: '05',
+  мая: '05',
+  июн: '06',
+  июл: '07',
+  авг: '08',
+  сен: '09',
+  сент: '09',
+  окт: '10',
+  ноя: '11',
+  дек: '12',
+};
+
 /** City/resort names — set both to_country and to_city. */
 const CITY_DESTINATION_ALIASES = {
   'abu dhabi': { country: 'AE', city: 'Abu Dhabi' },
@@ -202,7 +219,7 @@ function applyDestinationFromText(text, patch) {
   return false;
 }
 
-const { extractHotelNameFromText } = require('./hotel.resolver');
+const { extractHotelNameFromText, containsHotelBrand, isLikelyHotelName } = require('./hotel.resolver');
 
 function normalizeSearchParams(params = {}) {
   const p = { ...params };
@@ -354,7 +371,12 @@ function extractSearchIntent(text, existing = {}, nextField = null) {
 
   if (existing.search_intent) {
     if (tourAnswer && !hotelAnswer) {
-      return { search_intent: 'package', search_type: 'package', hotel_name: '', hotel_ids: [] };
+      const result = { search_intent: 'package', search_type: 'package' };
+      if (!existing.hotel_name && !existing.hotel_ids?.length) {
+        result.hotel_name = '';
+        result.hotel_ids = [];
+      }
+      return result;
     }
     if (hotelAnswer && !tourAnswer) {
       return { search_intent: 'hotel', search_type: 'hotel' };
@@ -369,10 +391,12 @@ function extractSearchIntent(text, existing = {}, nextField = null) {
 
   const hotelName = extractHotelNameFromText(text);
   const explicitHotel =
-    /(отель|hotel)/i.test(t) ||
-    /hilton|marriott|hyatt|sheraton|radisson|rixos|swissotel|movenpick|kempinski|ritz/i.test(t);
+    /\b(отель|hotel|resort|spa|palace)\b/i.test(t) || containsHotelBrand(text);
 
   if (hotelName && explicitHotel) {
+    if (/тур|пакет|перелет|перелёт|вылет/i.test(t)) {
+      return { search_intent: 'package', search_type: 'package', hotel_name: hotelName };
+    }
     return { search_intent: 'hotel', search_type: 'hotel', hotel_name: hotelName };
   }
 
@@ -423,6 +447,11 @@ function extractFromUserText(text, existing = {}, nextField = null) {
 
   Object.assign(patch, extractSearchIntent(text, existing, nextField));
 
+  if (/(?:с|нужен|нужно|хочу)\s+перел[её]т|с\s+перел[её]том|нужно\s+с\s+перел/i.test(t)) {
+    patch.search_intent = 'package';
+    patch.search_type = 'package';
+  }
+
   if (nextField === 'search_intent') {
     if (/тур|направлен|страну|курорт|пакет|package|отдохнуть/i.test(t)) {
       patch.search_intent = 'package';
@@ -452,6 +481,21 @@ function extractFromUserText(text, existing = {}, nextField = null) {
     const dmY = trimmed.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})$/);
     if (dmY) {
       patch.start_date = `${dmY[3]}-${dmY[2].padStart(2, '0')}-${dmY[1].padStart(2, '0')}`;
+    }
+    const abbrevDate = t.match(
+      /^(\d{1,2})\s*(янв|фев|мар|апр|мая?|июн|июл|авг|сен(?:т)?|окт|ноя|дек)(?:\s|$|[,.!?])/i,
+    );
+    if (abbrevDate) {
+      const monthNum = MONTH_ABBREV[abbrevDate[2].toLowerCase()];
+      if (monthNum) {
+        const day = String(abbrevDate[1]).padStart(2, '0');
+        const { normalizeStartDate } = require('./search.params.normalizer');
+        const year = new Date().getFullYear();
+        const currentMonth = new Date().getMonth() + 1;
+        const targetMonth = parseInt(monthNum, 10);
+        const targetYear = targetMonth < currentMonth ? year + 1 : year;
+        patch.start_date = normalizeStartDate(`${targetYear}-${monthNum}-${day}`);
+      }
     }
   }
   if (nextField === 'from_city') {
@@ -538,7 +582,7 @@ function extractFromUserText(text, existing = {}, nextField = null) {
 
   const applyMonthDay = (dayRaw, monthName) => {
     const day = String(dayRaw).padStart(2, '0');
-    const month = MONTH_MAP[monthName];
+    const month = MONTH_MAP[monthName] || MONTH_ABBREV[monthName?.toLowerCase()];
     if (!month) return;
     const { normalizeStartDate } = require('./search.params.normalizer');
     const year = new Date().getFullYear();
@@ -546,6 +590,16 @@ function extractFromUserText(text, existing = {}, nextField = null) {
     const targetMonth = parseInt(month, 10);
     let targetYear = targetMonth < currentMonth ? year + 1 : year;
     patch.start_date = normalizeStartDate(`${targetYear}-${month}-${day}`);
+  };
+
+  const applyMonthDayNum = (dayRaw, monthNum) => {
+    const day = String(dayRaw).padStart(2, '0');
+    const { normalizeStartDate } = require('./search.params.normalizer');
+    const year = new Date().getFullYear();
+    const currentMonth = new Date().getMonth() + 1;
+    const targetMonth = parseInt(monthNum, 10);
+    let targetYear = targetMonth < currentMonth ? year + 1 : year;
+    patch.start_date = normalizeStartDate(`${targetYear}-${monthNum}-${day}`);
   };
 
   // «с 15 по 30 августа» / «15 августа по 30 августа» → start_date + nights
@@ -571,6 +625,14 @@ function extractFromUserText(text, existing = {}, nextField = null) {
     applyMonthDay(dateMatch[1], dateMatch[2]);
   } else if (monthFirstMatch) {
     applyMonthDay(monthFirstMatch[2], monthFirstMatch[1]);
+  } else {
+    const abbrevMatch = t.match(
+      /(\d{1,2})\s*(янв|фев|мар|апр|мая?|июн|июл|авг|сен(?:т)?|окт|ноя|дек)(?:\s|$|[,.!?])/i,
+    );
+    if (abbrevMatch) {
+      const monthNum = MONTH_ABBREV[abbrevMatch[2].toLowerCase()];
+      if (monthNum) applyMonthDayNum(abbrevMatch[1], monthNum);
+    }
   }
 
   const isoDate = (text || '').match(/\d{4}-\d{2}-\d{2}/);
@@ -660,19 +722,25 @@ function extractFromUserText(text, existing = {}, nextField = null) {
   const intent =
     patch.search_intent || existing.search_intent || inferSearchIntentFromParams({ ...existing, ...patch });
   const explicitHotel =
-    /\b(отель|hotel)\b/i.test(t) ||
-    /hilton|marriott|hyatt|sheraton|radisson|rixos|riu\b|titanic|kempinski|barcelo|swissotel|movenpick|voyage|maxx royal|regnum/i.test(t);
-
-  if (
+    /\b(отель|hotel|resort|spa|palace)\b/i.test(t) || containsHotelBrand(text);
+  const shouldCaptureHotel =
     hotelName &&
     !/рейтинг|rating|оценк/i.test(hotelName) &&
     !existing.hotel_name &&
-    intent === 'hotel' &&
-    (explicitHotel || nextField === 'hotel_resolve' || nextField === 'destination')
-  ) {
+    (explicitHotel ||
+      isLikelyHotelName(hotelName) ||
+      nextField === 'hotel_resolve' ||
+      nextField === 'destination');
+
+  if (shouldCaptureHotel) {
     patch.hotel_name = hotelName;
-    patch.search_intent = 'hotel';
-    patch.search_type = 'hotel';
+    if (/тур|пакет|перелет|перелёт|вылет/i.test(t)) {
+      patch.search_intent = 'package';
+      patch.search_type = 'package';
+    } else {
+      patch.search_intent = 'hotel';
+      patch.search_type = 'hotel';
+    }
   }
 
   const looksLikeDateOrNumber =
@@ -918,7 +986,6 @@ function applyExtraction(conversation, userText, aiResponse, nextField = null) {
     params.search_type = 'package';
     params.search_intent = 'package';
     if (!params.hotel_ids?.length) {
-      delete params.hotel_name;
       params.hotel_ids = [];
     }
   } else if (intent === 'hotel') {

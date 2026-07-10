@@ -69,6 +69,12 @@ function findCheapestRoomOffer(roomsData, { startDate, nights, maxPrice, filterM
         const candidate = {
           room_type: roomType,
           meal_type: mealType,
+          meal_id: mealId,
+          room_id: room.room?.id ?? null,
+          room_listing_id: room.ID ?? null,
+          offer_id: offer.id ?? null,
+          operator_id: offer.operator_id ?? null,
+          operator_name: offer.operator_name ?? null,
           price,
           nights_count: offer.nights_count,
           start_date: offer.start_date,
