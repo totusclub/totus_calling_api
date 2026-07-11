@@ -24,6 +24,7 @@ const { extractDestinationQuery, extractExplicitCityName, resolveDestinationByTe
 const { applyExtraction, mergeSearchParams } = require('./params.extractor');
 const { extractParamsWithAi } = require('./ai.param-extractor');
 const { resolveHotelByName, resolveHotelDetailed, extractHotelNameFromText, normalizeHotelNameCandidate } = require('./hotel.resolver');
+const { enrichHotelWithDeepSeek } = require('./hotel.ai-enricher');
 const { executeSearch } = require('./search.engine');
 const { createTextMessage, createAssistantMessage } = require('./dto/messages');
 const { generateCollectionQuestion } = require('./question.composer');
@@ -351,6 +352,7 @@ async function resolveHotelNames(conversation, userText = '') {
       delete conversation.meta.resolved_hotel_query;
       delete conversation.meta.hotel_clarify_asked;
       delete conversation.meta.pending_hotel_clarification;
+      delete conversation.meta.hotel_ai_enrich;
       conversation.searchParams = params;
     }
   }
@@ -365,10 +367,45 @@ async function resolveHotelNames(conversation, userText = '') {
     conversation.searchParams = mergeSearchParams(params, { hotel_ids: [] });
   }
 
-  const result = await resolveHotelDetailed(params.hotel_name, params.from_city || 'Moscow', {
+  // DeepSeek: full hotel name + country/city before Totus autocomplete.
+  const aiHotel = await enrichHotelWithDeepSeek({
+    userText,
+    hotelName: params.hotel_name,
+    existingParams: params,
+    conversation,
+  });
+
+  let resolveName = params.hotel_name;
+  const resolveHints = {
     to_country: params.to_country,
     to_city: params.to_city,
-  });
+  };
+
+  if (aiHotel) {
+    if (aiHotel.hotel_name) {
+      resolveName = aiHotel.hotel_name;
+      if (
+        normalizeHotelNameCandidate(aiHotel.hotel_name).toLowerCase() !==
+        normalizeHotelNameCandidate(params.hotel_name).toLowerCase()
+      ) {
+        conversation.searchParams = mergeSearchParams(params, {
+          hotel_name: aiHotel.hotel_name,
+        });
+        params.hotel_name = aiHotel.hotel_name;
+      }
+    }
+    if (aiHotel.to_country) resolveHints.to_country = aiHotel.to_country;
+    if (aiHotel.to_city) resolveHints.to_city = aiHotel.to_city;
+    resolveHints.from_ai = true;
+    resolveHints.confidence = aiHotel.confidence;
+    resolveHints.ai_hotel_name = aiHotel.hotel_name;
+  }
+
+  const result = await resolveHotelDetailed(
+    resolveName,
+    params.from_city || 'Moscow',
+    resolveHints,
+  );
 
   // Genuinely ambiguous (same name in different cities) → ask the user, unless
   // we already asked for this exact query (then fall back to the best match to

@@ -303,12 +303,14 @@ function scoreHotelMatch(query, candidate, hints = {}) {
   if (/palace/i.test(qNorm) && /palace/i.test(cName)) score += 15;
 
   if (hints.to_country && candidate.iso2 && hints.to_country === candidate.iso2) {
-    score += 12;
+    score += hints.from_ai ? 28 : 12;
   }
   if (hints.to_city && candidate.city_name) {
     const city = String(candidate.city_name).toLowerCase();
     const hint = String(hints.to_city).toLowerCase();
-    if (city.includes(hint) || hint.includes(city)) score += 8;
+    if (city.includes(hint) || hint.includes(city)) {
+      score += hints.from_ai ? 20 : 8;
+    }
   }
 
   if (candidate.stars >= 4) score += 2;
@@ -447,24 +449,33 @@ function toResolvedHotel(match, fallbackName) {
  *   - status 'not_found'  → nothing convincing
  */
 async function resolveHotelDetailed(hotelName, fromCity = 'Moscow', hints = {}) {
-  const { normalized, matches } = await findHotelMatches(hotelName, fromCity, hints);
+  const searchName = hints.ai_hotel_name || hotelName;
+  const { normalized, matches } = await findHotelMatches(searchName, fromCity, hints);
 
   if (!matches.length) {
     return { status: 'not_found', hotel: null, options: [] };
   }
 
-  const top = matches[0];
+  let ranked = matches;
+
+  // When DeepSeek identified country/city, prefer matches in that place.
+  if (hints.from_ai && hints.to_country) {
+    const inPlace = matches.filter(
+      (m) => String(m.candidate.iso2 || '').toUpperCase() === hints.to_country,
+    );
+    if (inPlace.length) ranked = inPlace;
+  }
+
+  const top = ranked[0];
   if (top.score < MIN_MATCH_SCORE) {
     return {
       status: 'not_found',
       hotel: null,
-      options: matches.slice(0, 3).map((m) => toResolvedHotel(m, normalized)),
+      options: ranked.slice(0, 3).map((m) => toResolvedHotel(m, normalized)),
     };
   }
 
-  // Candidates within a small gap of the leader, sitting in different
-  // cities/countries → genuinely ambiguous, so we should ask the user.
-  const contenders = matches.filter(
+  const contenders = ranked.filter(
     (m) => m.score >= MIN_MATCH_SCORE && top.score - m.score <= AMBIGUITY_GAP,
   );
   const distinctPlaces = new Set(
@@ -475,6 +486,40 @@ async function resolveHotelDetailed(hotelName, fromCity = 'Moscow', hints = {}) 
         ).toLowerCase()}`,
     ),
   );
+
+  // High-confidence AI location → auto-pick best match in that country/city.
+  if (
+    hints.from_ai &&
+    hints.confidence === 'high' &&
+    hints.to_country &&
+    contenders.length >= 1 &&
+    distinctPlaces.size >= 2
+  ) {
+    const aiCountryMatches = contenders.filter(
+      (m) => String(m.candidate.iso2 || '').toUpperCase() === hints.to_country,
+    );
+    if (aiCountryMatches.length === 1) {
+      return {
+        status: 'resolved',
+        hotel: toResolvedHotel(aiCountryMatches[0], normalized),
+        options: [],
+      };
+    }
+    if (aiCountryMatches.length > 1 && hints.to_city) {
+      const cityHint = String(hints.to_city).toLowerCase();
+      const cityMatch = aiCountryMatches.find((m) => {
+        const city = String(m.candidate.city_name || '').toLowerCase();
+        return city.includes(cityHint) || cityHint.includes(city);
+      });
+      if (cityMatch) {
+        return {
+          status: 'resolved',
+          hotel: toResolvedHotel(cityMatch, normalized),
+          options: [],
+        };
+      }
+    }
+  }
 
   if (contenders.length >= 2 && distinctPlaces.size >= 2) {
     return {

@@ -29,7 +29,7 @@ module.exports = `Ты — движок извлечения параметро�
 - search_intent / search_type: "hotel" (конкретный отель) или "package" (тур/направление).
 - from_city — город вылета (Москва, Санкт-Петербург и т.д.).
 - to_city / to_country — направление.
-- hotel_name — только если ищут конкретный отель.
+- hotel_name — только если ищут конкретный отель. Пиши ПОЛНОЕ название со всеми уточнениями (район, филиал): «Doubletree Hilton Al Jadaf», «Rixos Premium Seagate», не сокращай до «Double Tree Hilton» или «Rixos».
 - adults, kids — строки с числом. nights — число.
 - kids_ages — массив возрастов детей, если kids > 0.
 - filter_price_max — бюджет в рублях (число или строка).
