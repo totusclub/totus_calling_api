@@ -23,7 +23,7 @@ const { composeLimitedCatalogAdvice, isLimitedPackageDestination } = require('./
 const { extractDestinationQuery, extractExplicitCityName, resolveDestinationByText } = require('./destination.resolver');
 const { applyExtraction, mergeSearchParams } = require('./params.extractor');
 const { extractParamsWithAi } = require('./ai.param-extractor');
-const { resolveHotelByName, extractHotelNameFromText, normalizeHotelNameCandidate } = require('./hotel.resolver');
+const { resolveHotelByName, resolveHotelDetailed, extractHotelNameFromText, normalizeHotelNameCandidate } = require('./hotel.resolver');
 const { executeSearch } = require('./search.engine');
 const { createTextMessage, createAssistantMessage } = require('./dto/messages');
 const { generateCollectionQuestion } = require('./question.composer');
@@ -309,6 +309,38 @@ async function resolveHotelNames(conversation, userText = '') {
     return cleared;
   }
 
+  conversation.meta = conversation.meta || {};
+
+  // If we previously asked the user to disambiguate a hotel, try to apply their
+  // answer (a number from the list, or a city/country name) first.
+  if (conversation.meta.hotel_options?.length && userText) {
+    const picked = pickClarifiedOption(conversation.meta.hotel_options, userText);
+    if (picked) {
+      const wantsPkg =
+        params.search_intent === 'package' || params.search_type === 'package';
+      conversation.hotelResolveAttempts = 0;
+      conversation.meta.resolved_hotel_query = String(picked.hotel_name || params.hotel_name)
+        .trim()
+        .toLowerCase();
+      delete conversation.meta.hotel_options;
+      delete conversation.meta.hotel_clarify_asked;
+      delete conversation.meta.pending_hotel_clarification;
+      conversation.searchParams = mergeSearchParams(params, {
+        hotel_ids: [picked.hotel_id],
+        hotel_name: picked.hotel_name,
+        search_type: wantsPkg ? 'package' : 'hotel',
+        search_intent: wantsPkg ? 'package' : 'hotel',
+        to_country: picked.to_country || params.to_country,
+        to_city: picked.to_city || params.to_city,
+        destination_label: picked.destination_label || params.destination_label,
+        destination_label_prep: picked.destination_label_prep || params.destination_label_prep,
+      });
+      conversation.meta.city_from_hotel = true;
+      if (picked.to_city) conversation.meta.user_requested_to_city = true;
+      return conversation.searchParams;
+    }
+  }
+
   const freshExtract = userText ? extractHotelNameFromText(userText) : null;
   if (freshExtract) {
     const freshNorm = normalizeHotelNameCandidate(freshExtract).toLowerCase();
@@ -316,7 +348,9 @@ async function resolveHotelNames(conversation, userText = '') {
     if (!currentNorm || freshNorm !== currentNorm) {
       params.hotel_name = freshExtract;
       params.hotel_ids = [];
-      if (conversation.meta) delete conversation.meta.resolved_hotel_query;
+      delete conversation.meta.resolved_hotel_query;
+      delete conversation.meta.hotel_clarify_asked;
+      delete conversation.meta.pending_hotel_clarification;
       conversation.searchParams = params;
     }
   }
@@ -331,10 +365,29 @@ async function resolveHotelNames(conversation, userText = '') {
     conversation.searchParams = mergeSearchParams(params, { hotel_ids: [] });
   }
 
-  const resolved = await resolveHotelByName(params.hotel_name, params.from_city || 'Moscow', {
+  const result = await resolveHotelDetailed(params.hotel_name, params.from_city || 'Moscow', {
     to_country: params.to_country,
     to_city: params.to_city,
   });
+
+  // Genuinely ambiguous (same name in different cities) → ask the user, unless
+  // we already asked for this exact query (then fall back to the best match to
+  // avoid looping).
+  if (result.status === 'ambiguous' && conversation.meta.hotel_clarify_asked !== queryKey) {
+    conversation.hotelResolveAttempts = 0;
+    conversation.meta.hotel_clarify_asked = queryKey;
+    conversation.meta.hotel_options = result.options;
+    conversation.meta.pending_hotel_clarification = {
+      query: params.hotel_name,
+      options: result.options,
+    };
+    conversation.searchParams = mergeSearchParams(params, { hotel_ids: [] });
+    return conversation.searchParams;
+  }
+
+  const resolved =
+    result.hotel || (result.status === 'ambiguous' ? result.options?.[0] : null);
+
   if (!resolved) {
     conversation.hotelResolveAttempts = (conversation.hotelResolveAttempts || 0) + 1;
     if (conversation.hotelResolveAttempts >= 2) {
@@ -348,8 +401,8 @@ async function resolveHotelNames(conversation, userText = '') {
   }
 
   conversation.hotelResolveAttempts = 0;
-  conversation.meta = conversation.meta || {};
   conversation.meta.resolved_hotel_query = queryKey;
+  delete conversation.meta.pending_hotel_clarification;
 
   const wantsPackage =
     params.search_intent === 'package' || params.search_type === 'package';
@@ -368,6 +421,42 @@ async function resolveHotelNames(conversation, userText = '') {
     conversation.meta.user_requested_to_city = true;
   }
   return conversation.searchParams;
+}
+
+/** Match a user's clarification answer to one of the offered hotel options. */
+function pickClarifiedOption(options, text) {
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return null;
+
+  const numMatch = t.match(/^\s*(\d{1,2})\b/);
+  if (numMatch) {
+    const idx = parseInt(numMatch[1], 10) - 1;
+    if (idx >= 0 && idx < options.length) return options[idx];
+  }
+
+  for (const opt of options) {
+    const city = String(opt.to_city || '').toLowerCase();
+    const label = String(opt.destination_label || '').toLowerCase();
+    const country = String(opt.to_country || '').toLowerCase();
+    if (city && (t.includes(city) || city.includes(t))) return opt;
+    if (label && label.split(/[\s,]+/).some((w) => w.length >= 3 && t.includes(w))) return opt;
+    if (country && t === country) return opt;
+  }
+  return null;
+}
+
+/** Build a short clarification question when a hotel name matches several cities. */
+function buildHotelClarificationReply(clarification) {
+  const options = (clarification?.options || []).slice(0, 4);
+  const lines = options.map((opt, i) => {
+    const place = opt.destination_label || [opt.to_city, opt.to_country].filter(Boolean).join(', ');
+    return `${i + 1}. ${opt.hotel_name}${place ? ` — ${place}` : ''}`;
+  });
+  return (
+    `Нашёл несколько отелей с названием «${clarification.query}». ` +
+    `Уточните, какой именно нужен:\n${lines.join('\n')}\n\n` +
+    'Напишите номер или город.'
+  );
 }
 
 function buildPostSearchReply(conversation, userText, params) {
@@ -543,6 +632,16 @@ async function processTurnBody(conversation, userText, { onChunk } = {}) {
   }
 
   await resolveHotelNames(conversation, userText);
+
+  // If the hotel name matched several cities, ask the user to disambiguate
+  // before collecting anything else or searching.
+  if (conversation.meta?.pending_hotel_clarification) {
+    const clarification = conversation.meta.pending_hotel_clarification;
+    delete conversation.meta.pending_hotel_clarification;
+    const reply = buildHotelClarificationReply(clarification);
+    return pushAssistantReply(conversation, reply, onChunk);
+  }
+
   conversation.searchParams = applyDefaults(conversation.searchParams);
   conversation.searchParams = sanitizeFromCity(conversation.searchParams, userText);
   conversation.searchParams = applySemanticDefaults(conversation.searchParams, conversation);
