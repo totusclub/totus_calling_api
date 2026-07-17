@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { DEEPSEEK_API_KEY, DEEPSEEK_API_URL } = require('./config');
+const { DEEPSEEK_MODEL, LLM_TEMPERATURE } = require('../llm.config');
 const { stripMetaLanguage } = require('./response.composer');
 const { formatDestinationPoPhrase } = require('./destination.labels');
 const { summarizeKnownParams, getLastShownHotels } = require('./conversation.state');
@@ -134,9 +135,9 @@ async function generateHotelComparisonReply(userText, conversation, params, hote
     const response = await axios.post(
       DEEPSEEK_API_URL,
       {
-        model: 'deepseek-chat',
+        model: DEEPSEEK_MODEL,
         messages,
-        temperature: 0.5,
+        temperature: LLM_TEMPERATURE.dialogue,
         max_tokens: 320,
       },
       {
@@ -207,9 +208,9 @@ async function generatePostSearchReply(userText, conversation, params) {
     const response = await axios.post(
       DEEPSEEK_API_URL,
       {
-        model: 'deepseek-chat',
+        model: DEEPSEEK_MODEL,
         messages,
-        temperature: 0.55,
+        temperature: LLM_TEMPERATURE.dialogue,
         max_tokens: 220,
       },
       {

@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { DEEPSEEK_API_KEY, DEEPSEEK_API_URL } = require('./config');
+const { DEEPSEEK_MODEL, LLM_TEMPERATURE } = require('../llm.config');
 const WORKFLOW_PROMPT = require('./workflow.prompt');
 
 /**
@@ -32,9 +33,9 @@ async function extractParamsWithAi(userMessage, conversation, nextField = null) 
     const response = await axios.post(
       DEEPSEEK_API_URL,
       {
-        model: 'deepseek-chat',
+        model: DEEPSEEK_MODEL,
         messages,
-        temperature: 0.2,
+        temperature: LLM_TEMPERATURE.params,
         max_tokens: 400,
       },
       {

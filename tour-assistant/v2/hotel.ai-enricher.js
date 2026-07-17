@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { DEEPSEEK_API_KEY, DEEPSEEK_API_URL } = require('./config');
+const { DEEPSEEK_MODEL, LLM_TEMPERATURE } = require('../llm.config');
 
 const HOTEL_ENRICH_PROMPT = `Ты определяешь конкретный отель и его местоположение для туристического API.
 
@@ -99,9 +100,9 @@ async function enrichHotelWithDeepSeek({
     const response = await axios.post(
       DEEPSEEK_API_URL,
       {
-        model: 'deepseek-chat',
+        model: DEEPSEEK_MODEL,
         messages,
-        temperature: 0.1,
+        temperature: LLM_TEMPERATURE.extraction,
         max_tokens: 200,
       },
       {

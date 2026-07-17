@@ -1626,6 +1626,7 @@ app.post('/api/tts/synthesize-to-file', async (req, res) => {
 // DeepSeek API configuration
 const DEEPSEEK_API_KEY = '';
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
+const { DEEPSEEK_MODEL, LLM_TEMPERATURE } = require('./tour-assistant/llm.config');
 
 // System prompt for tour agent assistant
 // const DEEPSEEK_SYSTEM_PROMPT = `Ты профессиональный туристический агент-помощник. Твоя задача - помочь пользователям найти идеальные туры и путешествия.
@@ -1713,9 +1714,9 @@ async function callDeepSeekAPI(userMessage, conversationHistory = []) {
     const response = await axios.post(
       DEEPSEEK_API_URL,
       {
-        model: 'deepseek-chat',
+        model: DEEPSEEK_MODEL,
         messages: messages,
-        temperature: 0.7,
+        temperature: LLM_TEMPERATURE.chat,
         max_tokens: 400,
       },
       {
@@ -2369,9 +2370,9 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
         const response = await axios.post(
             DEEPSEEK_API_URL,
             {
-                model: 'deepseek-chat',
+                model: DEEPSEEK_MODEL,
                 messages,
-                temperature: 0.7,
+                temperature: LLM_TEMPERATURE.chat,
                 max_tokens: 600,
             },
             {

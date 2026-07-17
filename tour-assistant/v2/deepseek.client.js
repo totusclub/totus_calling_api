@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { DEEPSEEK_API_KEY, DEEPSEEK_API_URL } = require('./config');
+const { DEEPSEEK_MODEL, LLM_TEMPERATURE } = require('../llm.config');
 const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = require('../shared/systemPrompt');
 const { mergeSearchParamsFromHistory } = require('./utils/searchParamsUtils');
 async function callDeepSeek(userMessage, conversationHistory, currentSearchParams = {}) {
@@ -68,9 +69,9 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
         const response = await axios.post(
             DEEPSEEK_API_URL,
             {
-                model: 'deepseek-chat',
+                model: DEEPSEEK_MODEL,
                 messages,
-                temperature: 0.7,
+                temperature: LLM_TEMPERATURE.chat,
                 max_tokens: 600,
             },
             {

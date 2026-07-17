@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { DEEPSEEK_API_KEY, DEEPSEEK_API_URL } = require('./config');
+const { DEEPSEEK_MODEL, LLM_TEMPERATURE } = require('../llm.config');
 const { formatDestinationSummary, formatDestinationInPhrase } = require('./destination.labels');
 const { stripMetaLanguage } = require('./response.composer');
 const { summarizeKnownParams } = require('./conversation.state');
@@ -91,9 +92,9 @@ async function generateDestinationActivitiesAnswer(userText, conversation, known
     const response = await axios.post(
       DEEPSEEK_API_URL,
       {
-        model: 'deepseek-chat',
+        model: DEEPSEEK_MODEL,
         messages,
-        temperature: 0.65,
+        temperature: LLM_TEMPERATURE.dialogue,
         max_tokens: 450,
       },
       {
