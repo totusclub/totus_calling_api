@@ -1,9 +1,10 @@
 /** V2-only config — does not touch legacy tour-assistant routes. */
 const llm = require('../llm.config');
+const { env } = require('../../lib/env');
 
 module.exports = {
-  DEEPSEEK_API_KEY:
-    process.env.DEEPSEEK_API_KEY || '',
+  // Только из .env (Б.1): без ключа v2-эндпоинты ИИ отвечают ошибкой конфигурации
+  DEEPSEEK_API_KEY: env('DEEPSEEK_API_KEY') || null,
   DEEPSEEK_API_URL:
     process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com/v1/chat/completions',
   DEEPSEEK_MODEL: llm.DEEPSEEK_MODEL,

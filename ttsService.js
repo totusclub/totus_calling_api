@@ -7,14 +7,23 @@ const fs = require('fs');
 const util = require('util');
 const path = require('path');
 const textToSpeech = require('@google-cloud/text-to-speech');
+const { env } = require('./lib/env');
 
-// Google Cloud JSON key path
-const keyFilename = path.join(__dirname, 'totusvoice-911c60095e2f.json');
-
-// Initialize Google Cloud TTS client
-const client = new textToSpeech.TextToSpeechClient({
-  keyFilename: keyFilename,
-});
+// Ключ сервисного аккаунта Google лежит ВНЕ репозитория (Б.1):
+//   GOOGLE_APPLICATION_CREDENTIALS=/home/secrets/calling/google-tts.json
+// Клиент создаётся лениво — без ключа сервис стартует, а TTS отвечает ошибкой конфигурации.
+let client = null;
+function getClient() {
+  if (client) return client;
+  const keyFilename = env('GOOGLE_APPLICATION_CREDENTIALS');
+  if (!keyFilename) {
+    throw new Error('[ENV] GOOGLE_APPLICATION_CREDENTIALS is not set (путь к JSON сервисного аккаунта Google TTS)');
+  }
+  client = new textToSpeech.TextToSpeechClient({
+    keyFilename: path.resolve(keyFilename),
+  });
+  return client;
+}
 
 const writeFile = util.promisify(fs.writeFile);
 
@@ -60,7 +69,7 @@ async function synthesizeSpeech(text, options = {}) {
       voiceName: voiceName || 'default',
     });
 
-    const [response] = await client.synthesizeSpeech(request);
+    const [response] = await getClient().synthesizeSpeech(request);
 
     if (!response.audioContent) {
       throw new Error('No audio content received from Google Cloud TTS');
@@ -106,4 +115,3 @@ module.exports = {
   synthesizeSpeech,
   synthesizeSpeechToFile,
 };
-
