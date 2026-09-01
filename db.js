@@ -51,6 +51,35 @@ const userDb = {
         }
     },
 
+    // Get user by email — для входа агента с bcrypt (index.js /api/web/login).
+    // Пароль сравнивается в index.js, не в SQL.
+    async getUserByEmail(email) {
+        try {
+            const [rows] = await pool.execute(
+                'SELECT * FROM users WHERE email = ? LIMIT 1',
+                [email]
+            );
+            return rows.length > 0 ? rows[0] : null;
+        } catch (error) {
+            console.error('Error getting user by email:', error);
+            throw error;
+        }
+    },
+
+    // Update user password hash (ленивая миграция plaintext → bcrypt при первом входе)
+    async updateUserPassword(userId, passwordHash) {
+        try {
+            const [result] = await pool.execute(
+                'UPDATE users SET password = ? WHERE id = ?',
+                [passwordHash, userId]
+            );
+            return result.affectedRows > 0;
+        } catch (error) {
+            console.error('Error updating user password:', error);
+            throw error;
+        }
+    },
+
     // Get user device info by loyalty_id
     // Handles loyalty IDs with or without spaces (normalizes by removing spaces)
     async getUserDeviceInfoByLoyaltyId(loyaltyId) {
