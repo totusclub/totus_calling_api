@@ -2,15 +2,16 @@
 // MySQL database connection configuration
 
 const mysql = require('mysql2/promise');
+const { requireEnv, env } = require('./lib/env');
 
-
-// Database configuration from environment variables or defaults
+// Подключение к MySQL — только из .env (Б.1, SECURITY_AUDIT_SECRETS_RU.md), без литералов:
+//   DB_HOST, DB_USER, DB_PASSWORD, DB_NAME (та же база kedam, что у totus_API), DB_PORT (опц., 3306)
 const dbConfig = {
-    host:  '109.73.206.121',
-    port:  3306,
-    user: 'totus',
-    password: 'f?pJY8AUv+KKf5',
-    database: 'kedam',
+    host: requireEnv('DB_HOST'),
+    port: Number(env('DB_PORT') || 3306),
+    user: requireEnv('DB_USER'),
+    password: requireEnv('DB_PASSWORD'),
+    database: requireEnv('DB_NAME'),
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
@@ -29,7 +30,7 @@ pool.getConnection()
     })
     .catch(err => {
         console.error('❌ MySQL database connection error:', err.message);
-        console.error('Please check your database configuration in .env file');
+        console.error('Please check DB_HOST / DB_USER / DB_PASSWORD / DB_NAME in .env');
     });
 
 module.exports = pool;
