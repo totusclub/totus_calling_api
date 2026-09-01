@@ -5,16 +5,21 @@
   "main": "index.js",
   "scripts": {
     "start": "NODE_ENV=development node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "check": "node --check index.js && node scripts/check-auth-core.js"
   },
   "dependencies": {
     "@google-cloud/text-to-speech": "^6.4.0",
     "apn": "^2.2.0",
     "axios": "^1.13.2",
+    "bcryptjs": "^3.0.2",
     "body-parser": "^1.20.3",
     "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
     "express": "^4.21.1",
+    "express-rate-limit": "^7.5.0",
     "firebase-admin": "^13.8.0",
+    "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.6.0",
     "socket.io": "^4.8.1",
     "uuid": "^9.0.1"
