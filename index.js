@@ -22,49 +22,27 @@ const {Server} = require('socket.io');
 const {userDb, contactDb, favoriteDb} = require('./db');
 const {synthesizeSpeech, synthesizeSpeechToFile} = require('./ttsService');
 const axios = require('axios');
+const bcrypt = require('bcryptjs');
+const authCore = require('./lib/auth');
+const { corsOrigin, corsOptions, loginLimiter, allowedOrigins } = require('./lib/security');
+const { httpGate, socketGate, socketLoyaltyId } = require('./middleware/auth');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: '*',
+    origin: corsOrigin, // whitelist из lib/security.js (в AUTH_MODE=log — пропуск с логом)
   },
 });
 
 // Trust proxy (important if behind reverse proxy/load balancer)
 app.set('trust proxy', true);
 
-// Handle OPTIONS requests FIRST - before any other middleware
-// This prevents redirects from breaking CORS preflight
-app.options('*', (req, res) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  res.header('Access-Control-Max-Age', '86400'); // 24 hours
-  return res.sendStatus(200);
-});
-
-// CORS configuration - allow all origins for development and production
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  credentials: false,
-  preflightContinue: false,
-  optionsSuccessStatus: 200,
-}));
-
-// Additional CORS headers middleware as backup
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  // Don't redirect OPTIONS requests
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
-});
+// CORS: whitelist origin'ов (CORS_ORIGINS / lib/security.js). Preflight обрабатывается
+// пакетом cors первым, до любых редиректов. В AUTH_MODE=log неизвестный origin
+// пропускается с записью [CORS] в лог, в enforce — блокируется.
+app.options('*', cors(corsOptions));
+app.use(cors(corsOptions));
 
 app.use(bodyParser.json());
 // Simple request logger so you can see every hit
@@ -72,6 +50,9 @@ app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
+
+// JWT-гейт по политике путей (middleware/auth.js). AUTH_MODE=log — только лог, enforce — 401/403.
+app.use(httpGate);
 
 // In-memory stores (for active calls and WebRTC signaling)
 const devices = new Map(); // deviceId -> { userId, loyaltyId, platform, voipToken, socketId }
@@ -161,7 +142,13 @@ function detectPhonePlatformFromToken(token) {
 // Web app login - only agents can login
 // POST /api/web/login
 // body: { email: string, password: string }
-app.post('/api/web/login', async (req, res) => {
+// Пароли агентов — bcrypt; старые plaintext-пароли перехэшируются при первом успешном входе.
+// Ответ: { ok, user } (как раньше) + accessToken / refreshToken (agent-JWT, тот же JWT_SECRET, что у totus_API).
+function looksLikeBcrypt(value) {
+  return typeof value === 'string' && /^\$2[aby]\$\d{2}\$/.test(value);
+}
+
+app.post('/api/web/login', loginLimiter, async (req, res) => {
   const {email, password} = req.body || {};
   console.log('web-login', email);
   
@@ -170,11 +157,31 @@ app.post('/api/web/login', async (req, res) => {
   }
 
   try {
-    // Get user by email and password
-    const user = await userDb.getUserByEmailAndPassword(email, password);
-    
-    if (!user) {
-      return res.status(401).json({error: 'Invalid email or password'});
+    const user = await userDb.getUserByEmail(String(email).trim().toLowerCase());
+    const invalid = () => res.status(401).json({error: 'Invalid email or password'});
+
+    if (!user || !user.password) {
+      return invalid();
+    }
+
+    let ok = false;
+    if (looksLikeBcrypt(user.password)) {
+      ok = await bcrypt.compare(String(password), user.password);
+    } else if (user.password === String(password)) {
+      ok = true;
+      try {
+        await userDb.updateUserPassword(user.id, await bcrypt.hash(String(password), 10));
+      } catch (rehashErr) {
+        console.warn('[web-login] password rehash failed:', rehashErr.message);
+      }
+    }
+    if (!ok) {
+      return invalid();
+    }
+
+    // access: 0/NULL — Доступ, 1 — Заблок.
+    if (Number(user.access) === 1) {
+      return res.status(403).json({error: 'Access denied'});
     }
 
     // Check if user has role 'agent'
@@ -182,9 +189,20 @@ app.post('/api/web/login', async (req, res) => {
       return res.status(403).json({error: 'Access denied. Only agents can login to web app.'});
     }
 
+    const tokens = process.env.JWT_SECRET && process.env.JWT_REFRESH_SECRET
+      ? {
+          accessToken: authCore.signAgentToken(user),
+          refreshToken: authCore.signRefreshToken(user.id, 'agent'),
+        }
+      : {};
+    if (!tokens.accessToken) {
+      console.warn('[web-login] JWT_SECRET / JWT_REFRESH_SECRET not set — login without tokens');
+    }
+
     // Return user data (without password)
     res.json({
       ok: true,
+      ...tokens,
       user: {
         id: user.id,
         loyaltyId: user.loyalty_id,
@@ -1309,12 +1327,22 @@ app.post('/api/calls/:callId/end', (req, res) => {
 // Socket.IO signalling for presence and call state
 // ======================
 
+// JWT в handshake (auth.token). AUTH_MODE=log — сокет без токена пропускается с логом.
+io.use(socketGate);
+
 io.on('connection', socket => {
   // console.log('Socket connected', socket.id);
 
   socket.on('registerDevice', async ({deviceId, loyaltyId, userId}) => {
     if (!deviceId) {
       return;
+    }
+
+    // Личность — из токена сокета, а не из payload (если токен есть)
+    const tokenLoyaltyId = socketLoyaltyId(socket);
+    if (tokenLoyaltyId) {
+      loyaltyId = tokenLoyaltyId;
+      userId = undefined;
     }
     
     // Use loyaltyId if provided, otherwise try userId for backward compatibility
@@ -3227,6 +3255,8 @@ app.get('/api/health', (req, res) => {
 server.listen(PORT, () => {
   console.log(`Backend listening on port ${PORT}`);
   console.log('APN provider using key:', providerOpts.token.key);
+  console.log(`[AUTH] mode=${authCore.authMode()} (AUTH_MODE=log|enforce), JWT_SECRET loaded: ${Boolean(process.env.JWT_SECRET)}, JWT_REFRESH_SECRET loaded: ${Boolean(process.env.JWT_REFRESH_SECRET)}`);
+  console.log(`[CORS] origins: ${allowedOrigins().join(', ')}`);
 });
 
 
