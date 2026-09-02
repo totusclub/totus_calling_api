@@ -22,6 +22,7 @@ const {
     requireAuth,
     logAuth,
 } = require('../lib/auth');
+const { iceServersHandler } = require('../lib/iceServers');
 
 function normLoyalty(v) {
     return String(v || '').replace(/\s+/g, '');
@@ -42,6 +43,9 @@ const POLICY = [
     { m: 'GET', re: /^\/api\/users\/search\/[^/]+$/, roles: ['user'] },
     { m: 'GET', re: /^\/api\/users\/([^/]+)$/, roles: ['user'], ownerLoyalty: { param: 1 } },
     { m: 'GET', re: /^\/api\/users$/, roles: ['agent', 'staff'] },
+
+    // ICE-серверы для WebRTC (Б.1): обрабатывается прямо здесь (handler), чтобы не трогать index.js
+    { m: 'GET', re: /^\/api\/ice-servers$/, roles: ['user'], handler: iceServersHandler },
 
     { m: 'POST', re: /^\/api\/(register-device|unregister-device)$/, roles: ['user'], ownerLoyalty: { body: ['loyaltyId', 'userId'] } },
     { re: /^\/api\/calls/, roles: ['user'] },
@@ -121,6 +125,7 @@ function httpGate(req, res, next) {
     return mwFor(rule.roles)(req, res, (err) => {
         if (err) return next(err);
         if (!checkOwner(req, res, rule, match)) return;
+        if (rule.handler) return rule.handler(req, res);
         next();
     });
 }
