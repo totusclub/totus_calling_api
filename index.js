@@ -26,6 +26,8 @@ const bcrypt = require('bcryptjs');
 const authCore = require('./lib/auth');
 const { corsOrigin, corsOptions, loginLimiter, allowedOrigins } = require('./lib/security');
 const { httpGate, socketGate, socketLoyaltyId } = require('./middleware/auth');
+// Секреты только из .env (Б.1, SECURITY_AUDIT_SECRETS_RU.md) — без fallback-литералов и файлов в репо.
+const { env, requireEnv, reportEnv } = require('./lib/env');
 
 const app = express();
 const server = http.createServer(app);
@@ -66,47 +68,51 @@ const loyaltyIdToDeviceId = new Map(); // loyaltyId -> deviceId (for quick looku
 // APNs (VoIP) Provider
 // ======================
 
-// You provided this snippet:
-//
-// const providerOpts = {
-//   token: {
-//     // key: './p8/AuthKey_FV2BW9CFNB.p8', // keep your file if needed sendbox
-//     key: './p8/AuthKey_2X2QV7S43J.p8', // keep your file if needed sendbox
-//     keyId: '2X2QV7S43J',
-//     teamId: 'C6258722D6'
-//   },
-//   production: false
-// };
-//
-// We adapt it to use an absolute path so it works regardless of where you start Node.
+// APNs-ключ (.p8) лежит ВНЕ репозитория; путь и идентификаторы — из .env:
+//   APN_KEY_PATH=/home/secrets/calling/AuthKey_XXXXXXXXXX.p8
+//   APN_KEY_ID=XXXXXXXXXX  APN_TEAM_ID=YYYYYYYYYY  APN_PRODUCTION=1
+// Без них VoIP-пуши на iOS не отправляются (лог [apn] disabled), сервис при этом работает.
+const providerOpts = env('APN_KEY_PATH') && env('APN_KEY_ID') && env('APN_TEAM_ID')
+  ? {
+      token: {
+        key: path.resolve(env('APN_KEY_PATH')),
+        keyId: env('APN_KEY_ID'),
+        teamId: env('APN_TEAM_ID'),
+      },
+      production: env('APN_PRODUCTION') !== '0', // 0 = sandbox / development
+    }
+  : null;
 
-const providerOpts = {
-  token: {
-    key: path.join(__dirname, 'p8', 'AuthKey_2X2QV7S43J.p8'),
-    keyId: '2X2QV7S43J',
-    teamId: 'C6258722D6',
-  },
-  production: true, // false = sandbox / development
-};
-
-const apnProvider = new apn.Provider(providerOpts);
+let apnProvider = null;
+if (providerOpts) {
+  try {
+    apnProvider = new apn.Provider(providerOpts);
+  } catch (e) {
+    console.error('[apn] provider init failed:', e.message);
+  }
+} else {
+  console.warn('[apn] disabled — set APN_KEY_PATH, APN_KEY_ID, APN_TEAM_ID in .env');
+}
 
 // This must match the VoIP topic configured for your app in Apple Developer portal.
 // Often: "<bundle-id>.voip" or just your bundle id if configured that way.
 const APN_VOIP_TOPIC = process.env.APN_VOIP_TOPIC || 'app.totus.club.voip';
 
+// Ключ Firebase Admin SDK (FCM) — файл вне репозитория: FIREBASE_CREDENTIALS_PATH=/home/secrets/calling/firebase-adminsdk.json
 let firebaseApp = null;
-try {
-  const firebaseServiceAccount = require(path.join(
-    __dirname,
-    'totusapp-2ab2b-firebase-adminsdk-fbsvc-c36c3f7233.json',
-  ));
-  firebaseApp = admin.initializeApp({
-    credential: admin.credential.cert(firebaseServiceAccount),
-  });
-  console.log('[fcm] Firebase Admin initialized');
-} catch (e) {
-  console.error('[fcm] Firebase Admin init failed:', e.message);
+const firebaseCredPath = env('FIREBASE_CREDENTIALS_PATH');
+if (firebaseCredPath) {
+  try {
+    const firebaseServiceAccount = require(path.resolve(firebaseCredPath));
+    firebaseApp = admin.initializeApp({
+      credential: admin.credential.cert(firebaseServiceAccount),
+    });
+    console.log('[fcm] Firebase Admin initialized');
+  } catch (e) {
+    console.error('[fcm] Firebase Admin init failed:', e.message);
+  }
+} else {
+  console.warn('[fcm] disabled — set FIREBASE_CREDENTIALS_PATH in .env');
 }
 
 function toFcmDataValue(value) {
@@ -940,6 +946,10 @@ app.post('/api/calls', async (req, res) => {
         voipTokenLength: callee.voipToken ? callee.voipToken.length : 0,
       });
 
+      if (!apnProvider) {
+        console.warn('[apn] push skipped: provider not configured (APN_KEY_PATH/APN_KEY_ID/APN_TEAM_ID)');
+        return res.json({ok: true, callId, apnResult: null, warning: 'apn_not_configured'});
+      }
       const result = await apnProvider.send(note, callee.voipToken);
       console.log(
         '[apn] sent=', result.sent.length,
@@ -1652,7 +1662,7 @@ app.post('/api/tts/synthesize-to-file', async (req, res) => {
 // ======================
 
 // DeepSeek API configuration
-const DEEPSEEK_API_KEY = '';
+const DEEPSEEK_API_KEY = env('DEEPSEEK_API_KEY') || null; // только из .env (Б.1)
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
 const { DEEPSEEK_MODEL, LLM_TEMPERATURE } = require('./tour-assistant/llm.config');
 
@@ -3254,7 +3264,8 @@ app.get('/api/health', (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Backend listening on port ${PORT}`);
-  console.log('APN provider using key:', providerOpts.token.key);
+  reportEnv();
+  console.log('APN provider:', apnProvider ? `key ${providerOpts.token.key} (production=${providerOpts.production})` : 'disabled');
   console.log(`[AUTH] mode=${authCore.authMode()} (AUTH_MODE=log|enforce), JWT_SECRET loaded: ${Boolean(process.env.JWT_SECRET)}, JWT_REFRESH_SECRET loaded: ${Boolean(process.env.JWT_REFRESH_SECRET)}`);
   console.log(`[CORS] origins: ${allowedOrigins().join(', ')}`);
 });
