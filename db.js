@@ -2,15 +2,16 @@
 // MySQL database connection configuration
 
 const mysql = require('mysql2/promise');
+const { requireEnv, env } = require('./lib/env');
 
-
-// Database configuration from environment variables or defaults
+// Подключение к MySQL — только из .env (Б.1, SECURITY_AUDIT_SECRETS_RU.md), без литералов:
+//   DB_HOST, DB_USER, DB_PASSWORD, DB_NAME (та же база kedam, что у totus_API), DB_PORT (опц., 3306)
 const dbConfig = {
-    host:  '213.109.202.180',
-    port:  3306,
-    user: 'root',
-    password: 'your_secure_password',
-    database: 'kedam',
+    host: requireEnv('DB_HOST'),
+    port: Number(env('DB_PORT') || 3306),
+    user: requireEnv('DB_USER'),
+    password: requireEnv('DB_PASSWORD'),
+    database: requireEnv('DB_NAME'),
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
@@ -29,7 +30,7 @@ pool.getConnection()
     })
     .catch(err => {
         console.error('❌ MySQL database connection error:', err.message);
-        console.error('Please check your database configuration in .env file');
+        console.error('Please check DB_HOST / DB_USER / DB_PASSWORD / DB_NAME in .env');
     });
 
 module.exports = pool;
@@ -47,6 +48,35 @@ const userDb = {
             return rows.length > 0 ? rows[0] : null;
         } catch (error) {
             console.error('Error getting user by email and password:', error);
+            throw error;
+        }
+    },
+
+    // Get user by email — для входа агента с bcrypt (index.js /api/web/login).
+    // Пароль сравнивается в index.js, не в SQL.
+    async getUserByEmail(email) {
+        try {
+            const [rows] = await pool.execute(
+                'SELECT * FROM users WHERE email = ? LIMIT 1',
+                [email]
+            );
+            return rows.length > 0 ? rows[0] : null;
+        } catch (error) {
+            console.error('Error getting user by email:', error);
+            throw error;
+        }
+    },
+
+    // Update user password hash (ленивая миграция plaintext → bcrypt при первом входе)
+    async updateUserPassword(userId, passwordHash) {
+        try {
+            const [result] = await pool.execute(
+                'UPDATE users SET password = ? WHERE id = ?',
+                [passwordHash, userId]
+            );
+            return result.affectedRows > 0;
+        } catch (error) {
+            console.error('Error updating user password:', error);
             throw error;
         }
     },

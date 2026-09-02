@@ -16,54 +16,35 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const {v4: uuidv4} = require('uuid');
 const apn = require('apn');
+const admin = require('firebase-admin');
 const http = require('http');
 const {Server} = require('socket.io');
 const {userDb, contactDb, favoriteDb} = require('./db');
 const {synthesizeSpeech, synthesizeSpeechToFile} = require('./ttsService');
 const axios = require('axios');
+const bcrypt = require('bcryptjs');
+const authCore = require('./lib/auth');
+const { corsOrigin, corsOptions, loginLimiter, allowedOrigins } = require('./lib/security');
+const { httpGate, socketGate, socketLoyaltyId } = require('./middleware/auth');
+// Секреты только из .env (Б.1, SECURITY_AUDIT_SECRETS_RU.md) — без fallback-литералов и файлов в репо.
+const { env, requireEnv, reportEnv } = require('./lib/env');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: '*',
+    origin: corsOrigin, // whitelist из lib/security.js (в AUTH_MODE=log — пропуск с логом)
   },
 });
 
 // Trust proxy (important if behind reverse proxy/load balancer)
 app.set('trust proxy', true);
 
-// Handle OPTIONS requests FIRST - before any other middleware
-// This prevents redirects from breaking CORS preflight
-app.options('*', (req, res) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  res.header('Access-Control-Max-Age', '86400'); // 24 hours
-  return res.sendStatus(200);
-});
-
-// CORS configuration - allow all origins for development and production
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  credentials: false,
-  preflightContinue: false,
-  optionsSuccessStatus: 200,
-}));
-
-// Additional CORS headers middleware as backup
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  // Don't redirect OPTIONS requests
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
-});
+// CORS: whitelist origin'ов (CORS_ORIGINS / lib/security.js). Preflight обрабатывается
+// пакетом cors первым, до любых редиректов. В AUTH_MODE=log неизвестный origin
+// пропускается с записью [CORS] в лог, в enforce — блокируется.
+app.options('*', cors(corsOptions));
+app.use(cors(corsOptions));
 
 app.use(bodyParser.json());
 // Simple request logger so you can see every hit
@@ -71,6 +52,9 @@ app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
+
+// JWT-гейт по политике путей (middleware/auth.js). AUTH_MODE=log — только лог, enforce — 401/403.
+app.use(httpGate);
 
 // In-memory stores (for active calls and WebRTC signaling)
 const devices = new Map(); // deviceId -> { userId, loyaltyId, platform, voipToken, socketId }
@@ -84,34 +68,78 @@ const loyaltyIdToDeviceId = new Map(); // loyaltyId -> deviceId (for quick looku
 // APNs (VoIP) Provider
 // ======================
 
-// You provided this snippet:
-//
-// const providerOpts = {
-//   token: {
-//     // key: './p8/AuthKey_FV2BW9CFNB.p8', // keep your file if needed sendbox
-//     key: './p8/AuthKey_2X2QV7S43J.p8', // keep your file if needed sendbox
-//     keyId: '2X2QV7S43J',
-//     teamId: 'C6258722D6'
-//   },
-//   production: false
-// };
-//
-// We adapt it to use an absolute path so it works regardless of where you start Node.
+// APNs-ключ (.p8) лежит ВНЕ репозитория; путь и идентификаторы — из .env:
+//   APN_KEY_PATH=/home/secrets/calling/AuthKey_XXXXXXXXXX.p8
+//   APN_KEY_ID=XXXXXXXXXX  APN_TEAM_ID=YYYYYYYYYY  APN_PRODUCTION=1
+// Без них VoIP-пуши на iOS не отправляются (лог [apn] disabled), сервис при этом работает.
+const providerOpts = env('APN_KEY_PATH') && env('APN_KEY_ID') && env('APN_TEAM_ID')
+  ? {
+      token: {
+        key: path.resolve(env('APN_KEY_PATH')),
+        keyId: env('APN_KEY_ID'),
+        teamId: env('APN_TEAM_ID'),
+      },
+      production: env('APN_PRODUCTION') !== '0', // 0 = sandbox / development
+    }
+  : null;
 
-const providerOpts = {
-  token: {
-    key: path.join(__dirname, 'p8', 'AuthKey_2X2QV7S43J.p8'),
-    keyId: '2X2QV7S43J',
-    teamId: 'C6258722D6',
-  },
-  production: true, // false = sandbox / development
-};
-
-const apnProvider = new apn.Provider(providerOpts);
+let apnProvider = null;
+if (providerOpts) {
+  try {
+    apnProvider = new apn.Provider(providerOpts);
+  } catch (e) {
+    console.error('[apn] provider init failed:', e.message);
+  }
+} else {
+  console.warn('[apn] disabled — set APN_KEY_PATH, APN_KEY_ID, APN_TEAM_ID in .env');
+}
 
 // This must match the VoIP topic configured for your app in Apple Developer portal.
 // Often: "<bundle-id>.voip" or just your bundle id if configured that way.
 const APN_VOIP_TOPIC = process.env.APN_VOIP_TOPIC || 'app.totus.club.voip';
+
+// Ключ Firebase Admin SDK (FCM) — файл вне репозитория: FIREBASE_CREDENTIALS_PATH=/home/secrets/calling/firebase-adminsdk.json
+let firebaseApp = null;
+const firebaseCredPath = env('FIREBASE_CREDENTIALS_PATH');
+if (firebaseCredPath) {
+  try {
+    const firebaseServiceAccount = require(path.resolve(firebaseCredPath));
+    firebaseApp = admin.initializeApp({
+      credential: admin.credential.cert(firebaseServiceAccount),
+    });
+    console.log('[fcm] Firebase Admin initialized');
+  } catch (e) {
+    console.error('[fcm] Firebase Admin init failed:', e.message);
+  }
+} else {
+  console.warn('[fcm] disabled — set FIREBASE_CREDENTIALS_PATH in .env');
+}
+
+function toFcmDataValue(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  return String(value);
+}
+
+function detectPhonePlatformFromToken(token) {
+  const raw = String(token || '').trim();
+  if (!raw) {
+    return null;
+  }
+
+  // APNs VoIP tokens are hex strings (typically 64+ chars, no ':').
+  const isLikelyApnsToken = /^[a-fA-F0-9]{40,}$/.test(raw) && !raw.includes(':');
+  if (isLikelyApnsToken) {
+    return 'ios';
+  }
+
+  // FCM tokens typically contain ':' and mixed URL-safe chars.
+  return 'android';
+}
 
 // ======================
 // Authentication (Login)
@@ -120,7 +148,13 @@ const APN_VOIP_TOPIC = process.env.APN_VOIP_TOPIC || 'app.totus.club.voip';
 // Web app login - only agents can login
 // POST /api/web/login
 // body: { email: string, password: string }
-app.post('/api/web/login', async (req, res) => {
+// Пароли агентов — bcrypt; старые plaintext-пароли перехэшируются при первом успешном входе.
+// Ответ: { ok, user } (как раньше) + accessToken / refreshToken (agent-JWT, тот же JWT_SECRET, что у totus_API).
+function looksLikeBcrypt(value) {
+  return typeof value === 'string' && /^\$2[aby]\$\d{2}\$/.test(value);
+}
+
+app.post('/api/web/login', loginLimiter, async (req, res) => {
   const {email, password} = req.body || {};
   console.log('web-login', email);
   
@@ -129,11 +163,31 @@ app.post('/api/web/login', async (req, res) => {
   }
 
   try {
-    // Get user by email and password
-    const user = await userDb.getUserByEmailAndPassword(email, password);
-    
-    if (!user) {
-      return res.status(401).json({error: 'Invalid email or password'});
+    const user = await userDb.getUserByEmail(String(email).trim().toLowerCase());
+    const invalid = () => res.status(401).json({error: 'Invalid email or password'});
+
+    if (!user || !user.password) {
+      return invalid();
+    }
+
+    let ok = false;
+    if (looksLikeBcrypt(user.password)) {
+      ok = await bcrypt.compare(String(password), user.password);
+    } else if (user.password === String(password)) {
+      ok = true;
+      try {
+        await userDb.updateUserPassword(user.id, await bcrypt.hash(String(password), 10));
+      } catch (rehashErr) {
+        console.warn('[web-login] password rehash failed:', rehashErr.message);
+      }
+    }
+    if (!ok) {
+      return invalid();
+    }
+
+    // access: 0/NULL — Доступ, 1 — Заблок.
+    if (Number(user.access) === 1) {
+      return res.status(403).json({error: 'Access denied'});
     }
 
     // Check if user has role 'agent'
@@ -141,9 +195,20 @@ app.post('/api/web/login', async (req, res) => {
       return res.status(403).json({error: 'Access denied. Only agents can login to web app.'});
     }
 
+    const tokens = process.env.JWT_SECRET && process.env.JWT_REFRESH_SECRET
+      ? {
+          accessToken: authCore.signAgentToken(user),
+          refreshToken: authCore.signRefreshToken(user.id, 'agent'),
+        }
+      : {};
+    if (!tokens.accessToken) {
+      console.warn('[web-login] JWT_SECRET / JWT_REFRESH_SECRET not set — login without tokens');
+    }
+
     // Return user data (without password)
     res.json({
       ok: true,
+      ...tokens,
       user: {
         id: user.id,
         loyaltyId: user.loyalty_id,
@@ -707,10 +772,13 @@ app.post('/api/calls', async (req, res) => {
         return res.status(404).json({error: 'Target user not found'});
       }
       
-      // Determine platform: web if has socketId, iOS if has voipToken
-      // Allow calling offline users if they have voipToken (VoIP push works even when offline)
-      const isWeb = !!user.socketId;
+      // Prefer phone push when token exists (mobile can still have stale socketId).
+      // Web is only true when there is no phone token.
       const isPhone = !!user.voipToken;
+      const inferredPhonePlatform = isPhone
+        ? detectPhonePlatformFromToken(user.voipToken)
+        : null;
+      const isWeb = !!user.socketId && !isPhone;
       
       if (!isWeb && !isPhone) {
         return res.status(404).json({error: 'Target user not registered for calls (no socketId or voipToken)'});
@@ -720,7 +788,7 @@ app.post('/api/calls', async (req, res) => {
         userId: user.id,
         loyaltyId: user.loyalty_id,
         voipToken: user.voipToken || null,
-        platform: isWeb ? 'web' : 'ios',
+        platform: isWeb ? 'web' : (inferredPhonePlatform || 'android'),
         socketId: user.socketId || null,
       };
       targetDeviceId = isWeb ? user.socketId : (user.voipToken || targetDeviceId);
@@ -816,7 +884,8 @@ app.post('/api/calls', async (req, res) => {
   // Allow calling offline users if they have voipToken (VoIP push works even when offline)
   const calleeSocketId = callee.socketId || deviceSockets.get(targetDeviceId);
   const isCalleeWeb = callee.platform === 'web' || !!calleeSocketId;
-  const isCalleePhone = (callee.platform === 'ios' && !!callee.voipToken) || (!!callee.voipToken && !callee.socketId);
+  const isCalleeIOSPhone = callee.platform === 'ios' && !!callee.voipToken;
+  const isCalleeAndroidPhone = callee.platform === 'android' && !!callee.voipToken;
 
   // For web clients: send offer via socket
   if (isCalleeWeb && calleeSocketId) {
@@ -843,8 +912,8 @@ app.post('/api/calls', async (req, res) => {
     });
   }
 
-  // For phone clients: send VoIP push notification
-  if (isCalleePhone) {
+  // For iOS phone clients: send VoIP push notification
+  if (isCalleeIOSPhone) {
     try {
       const note = new apn.Notification();
 
@@ -877,6 +946,10 @@ app.post('/api/calls', async (req, res) => {
         voipTokenLength: callee.voipToken ? callee.voipToken.length : 0,
       });
 
+      if (!apnProvider) {
+        console.warn('[apn] push skipped: provider not configured (APN_KEY_PATH/APN_KEY_ID/APN_TEAM_ID)');
+        return res.json({ok: true, callId, apnResult: null, warning: 'apn_not_configured'});
+      }
       const result = await apnProvider.send(note, callee.voipToken);
       console.log(
         '[apn] sent=', result.sent.length,
@@ -913,13 +986,62 @@ app.post('/api/calls', async (req, res) => {
       });
       res.status(500).json({error: 'APNs send failed: ' + err.message});
     }
+  } else if (isCalleeAndroidPhone) {
+    // Android incoming-call wake-up via FCM data-only push (killed/background safe).
+    try {
+      if (!firebaseApp) {
+        throw new Error('Firebase Admin is not initialized');
+      }
+      const message = {
+        token: callee.voipToken,
+        data: {
+          type: 'incoming_call',
+          callId: toFcmDataValue(callId),
+          uuid: toFcmDataValue(callId),
+          handle: toFcmDataValue(fromDeviceId || targetDeviceId || 'caller'),
+          callerName: toFcmDataValue(finalCallerName || 'Incoming call'),
+          caller_name: toFcmDataValue(finalCallerName || 'Incoming call'),
+          fromDevice: toFcmDataValue(fromDeviceId || 'caller'),
+          fromDeviceId: toFcmDataValue(fromDeviceId || ''),
+          fromLoyaltyId: toFcmDataValue(callerLoyaltyId || ''),
+          toLoyaltyId: toFcmDataValue(callee.loyaltyId || targetLoyaltyId || ''),
+          offerType: toFcmDataValue(offer?.type || 'offer'),
+          offerSdp: toFcmDataValue(offer?.sdp || ''),
+        },
+        android: {
+          priority: 'high',
+          ttl: 30000,
+          directBootOk: true,
+        },
+      };
+      console.log('[fcm] android voip payload audit', {
+        callId,
+        dataOnly: !message.notification,
+        hasData: !!message.data,
+        dataType: message.data?.type || null,
+        priority: message.android?.priority || null,
+        ttl: message.android?.ttl || null,
+        directBootOk: !!message.android?.directBootOk,
+      });
+
+      const messageId = await admin.messaging().send(message);
+      console.log('[fcm] incoming call push sent:', {
+        callId,
+        messageId,
+        toDeviceId: targetDeviceId,
+        toLoyaltyId: callee.loyaltyId || targetLoyaltyId || null,
+      });
+      res.json({ok: true, callId, platform: 'android', fcmMessageId: messageId});
+    } catch (err) {
+      console.error('[fcm] send error', err);
+      res.status(500).json({error: 'FCM send failed: ' + err.message});
+    }
   } else if (isCalleeWeb) {
     // Web client - already sent via socket above
     res.json({ok: true, callId, platform: 'web'});
   } else {
-    // TODO: Android – send FCM data message here
-    console.log('[create-call] Android push not implemented, deviceId=', targetDeviceId);
-    res.json({ok: true, callId, note: 'Android push not implemented yet'});
+    console.log('[create-call] No push channel available, deviceId=', targetDeviceId, 'platform=', callee.platform);
+    res.json({ok: true, callId, note: 'No push channel available'});
   }
   
   // Also notify caller (if we know its device and socket)
@@ -1215,12 +1337,22 @@ app.post('/api/calls/:callId/end', (req, res) => {
 // Socket.IO signalling for presence and call state
 // ======================
 
+// JWT в handshake (auth.token). AUTH_MODE=log — сокет без токена пропускается с логом.
+io.use(socketGate);
+
 io.on('connection', socket => {
   // console.log('Socket connected', socket.id);
 
   socket.on('registerDevice', async ({deviceId, loyaltyId, userId}) => {
     if (!deviceId) {
       return;
+    }
+
+    // Личность — из токена сокета, а не из payload (если токен есть)
+    const tokenLoyaltyId = socketLoyaltyId(socket);
+    if (tokenLoyaltyId) {
+      loyaltyId = tokenLoyaltyId;
+      userId = undefined;
     }
     
     // Use loyaltyId if provided, otherwise try userId for backward compatibility
@@ -1530,8 +1662,9 @@ app.post('/api/tts/synthesize-to-file', async (req, res) => {
 // ======================
 
 // DeepSeek API configuration
-const DEEPSEEK_API_KEY = '';
+const DEEPSEEK_API_KEY = env('DEEPSEEK_API_KEY') || null; // только из .env (Б.1)
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
+const { DEEPSEEK_MODEL, LLM_TEMPERATURE } = require('./tour-assistant/llm.config');
 
 // System prompt for tour agent assistant
 // const DEEPSEEK_SYSTEM_PROMPT = `Ты профессиональный туристический агент-помощник. Твоя задача - помочь пользователям найти идеальные туры и путешествия.
@@ -1619,9 +1752,9 @@ async function callDeepSeekAPI(userMessage, conversationHistory = []) {
     const response = await axios.post(
       DEEPSEEK_API_URL,
       {
-        model: 'deepseek-chat',
+        model: DEEPSEEK_MODEL,
         messages: messages,
-        temperature: 0.7,
+        temperature: LLM_TEMPERATURE.chat,
         max_tokens: 400,
       },
       {
@@ -1845,7 +1978,7 @@ app.post('/api/tour-assistant', async (req, res) => {
 const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
 Ты профессиональный туристический ассистент. Помогай пользователям найти идеальное путешествие, собирая ВСЕ необходимые данные перед запуском поиска.
 
-🎯 КРИТИЧЕСКИ ВАЖНО:
+КРИТИЧЕСКИ ВАЖНО:
 - НИКОГДА не запускай поиск, пока НЕ собраны ВСЕ обязательные поля
 - Задавай вопросы последовательно, по одному за раз
 - Если пользователь не ответил - задай вопрос снова, НЕ переходи к следующему
@@ -1954,7 +2087,7 @@ const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
 - filter_price_min (минимальная цена, по умолчанию 0 если не указано)
 - filter_stars, filter_meals, filter_beach_surface, filter_line и другие фильтры (все опциональны)
 
-🎯 АВТОМАТИЧЕСКОЕ ИЗВЛЕЧЕНИЕ ОПЦИОНАЛЬНЫХ ФИЛЬТРОВ:
+ АВТОМАТИЧЕСКОЕ ИЗВЛЕЧЕНИЕ ОПЦИОНАЛЬНЫХ ФИЛЬТРОВ:
 ВАЖНО: НЕ задавай вопросы про опциональные фильтры! Просто извлекай их из сообщений пользователя, если он их упоминает.
 Если пользователь говорит "любой", "не важно", "без разницы" про какой-то фильтр - игнорируй его.
 
@@ -2275,9 +2408,9 @@ async function callDeepSeek(userMessage, conversationHistory, currentSearchParam
         const response = await axios.post(
             DEEPSEEK_API_URL,
             {
-                model: 'deepseek-chat',
+                model: DEEPSEEK_MODEL,
                 messages,
-                temperature: 0.7,
+                temperature: LLM_TEMPERATURE.chat,
                 max_tokens: 600,
             },
             {
@@ -3116,6 +3249,10 @@ app.post('/api/tour-assistant/stream', async (req, res) => {
 // Note: Final search is now handled directly in the frontend using runFullSearchFlow
 // This endpoint is no longer needed
 
+// Tour Assistant V2 (isolated — does not change legacy /api/tour-assistant routes)
+const { mountTourAssistantV2Routes } = require('./tour-assistant/v2/routes');
+mountTourAssistantV2Routes(app);
+
 // ======================
 // Server start
 // ======================
@@ -3127,7 +3264,10 @@ app.get('/api/health', (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Backend listening on port ${PORT}`);
-  console.log('APN provider using key:', providerOpts.token.key);
+  reportEnv();
+  console.log('APN provider:', apnProvider ? `key ${providerOpts.token.key} (production=${providerOpts.production})` : 'disabled');
+  console.log(`[AUTH] mode=${authCore.authMode()} (AUTH_MODE=log|enforce), JWT_SECRET loaded: ${Boolean(process.env.JWT_SECRET)}, JWT_REFRESH_SECRET loaded: ${Boolean(process.env.JWT_REFRESH_SECRET)}`);
+  console.log(`[CORS] origins: ${allowedOrigins().join(', ')}`);
 });
 
 
