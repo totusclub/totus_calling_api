@@ -12,6 +12,10 @@
  *
  * AUTH_MODE=log (по умолчанию) — ничего не блокируется, только лог [AUTH] …;
  * AUTH_MODE=enforce — 401/403. AUTH_LOG_ONLY_PATHS — исключения при enforce.
+ *
+ * Support Chat (lib/supportChat.js) подключается здесь же: HTTP — через handler в POLICY
+ * (как /api/ice-servers), сокет — attachSocket() в socketGate. Его роуты защищены strict-режимом
+ * независимо от AUTH_MODE.
  */
 
 const {
@@ -23,6 +27,7 @@ const {
     logAuth,
 } = require('../lib/auth');
 const { iceServersHandler } = require('../lib/iceServers');
+const supportChat = require('../lib/supportChat');
 
 function normLoyalty(v) {
     return String(v || '').replace(/\s+/g, '');
@@ -46,6 +51,11 @@ const POLICY = [
 
     // ICE-серверы для WebRTC (Б.1): обрабатывается прямо здесь (handler), чтобы не трогать index.js
     { m: 'GET', re: /^\/api\/ice-servers$/, roles: ['user'], handler: iceServersHandler },
+
+    // Support Chat (lib/supportChat.js): сторона пользователя и сторона поддержки.
+    // Роуты сами проверяют токен в strict-режиме; правила здесь — для полноты политики.
+    { re: /^\/api\/support\/chat(\/|$)/, roles: ['user'], handler: supportChat.httpHandler },
+    { re: /^\/api\/support(\/|$)/, roles: ['agent', 'staff'], handler: supportChat.httpHandler },
 
     { m: 'POST', re: /^\/api\/(register-device|unregister-device)$/, roles: ['user'], ownerLoyalty: { body: ['loyaltyId', 'userId'] } },
     { re: /^\/api\/calls/, roles: ['user'] },
@@ -148,6 +158,9 @@ function socketGate(socket, next) {
     socket.data = socket.data || {};
     socket.data.auth = auth;
 
+    // Support Chat: комнаты и обработчики support:* (только при валидном токене)
+    try { supportChat.attachSocket(socket); } catch (e) { console.error('[support-chat] attachSocket failed:', e); }
+
     if (!reason) return next();
     if (authMode() === 'enforce') return next(new Error('unauthorized'));
 
@@ -165,5 +178,8 @@ function socketLoyaltyId(socket) {
     if (!auth || auth.role === 'staff') return null;
     return auth.payload?.loyalty_id || null;
 }
+
+// Проверка таблиц Support Chat после старта (лог-подсказка про миграцию, процесс не роняем)
+setTimeout(() => { supportChat.ensureReady().catch(() => {}); }, 3000).unref();
 
 module.exports = { httpGate, socketGate, socketLoyaltyId, POLICY, findRule };
