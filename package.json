@@ -6,7 +6,8 @@
   "scripts": {
     "start": "NODE_ENV=development node index.js",
     "dev": "nodemon index.js",
-    "check": "node --check index.js && node scripts/check-auth-core.js"
+    "check": "node --check index.js && node scripts/check-auth-core.js && node scripts/check-support-chat.js",
+    "migrate:support-chat": "node scripts/run-support-chat-migration.js"
   },
   "dependencies": {
     "@google-cloud/text-to-speech": "^6.4.0",

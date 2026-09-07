@@ -598,7 +598,7 @@ const favoriteDb = {
     },
 };
 
-module.exports = {userDb, deviceDb, callDb, candidateDb, contactDb, favoriteDb};
+module.exports = {userDb, deviceDb, callDb, candidateDb, contactDb, favoriteDb, pool}; // pool — для lib/supportChat.js и scripts/run-support-chat-migration.js
 
 
 
