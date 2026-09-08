@@ -11,7 +11,7 @@ const { service, devices, campaigns, reminders, calls, types, fcm, webpush } = h
 const routes = require('../lib/notifications/routes');
 const { findRule } = require('../middleware/auth');
 
-// --- типы и настройки -------------------------------------------------
+// --- типы и настройки -------------------------------------------------------
 assert.strictEqual(types.categoryOf('payment_success'), 'orders');
 assert.strictEqual(types.categoryOf('support_message'), 'support');
 assert.strictEqual(types.categoryOf('nope'), 'system');
@@ -53,7 +53,7 @@ assert.strictEqual(service.nextAllowedTime(new Date('2026-09-08T10:00:00Z')).toI
 assert.strictEqual(service._internal.serializeSettings(null).categories.length, 6);
 assert.strictEqual(service._internal.serializeSettings({ prefs: '{"email":false,"promo":true}' }).email, false);
 
-// --- устройства --------------------------------------------------------
+// --- устройства --------------------------------------------------------------
 assert.deepStrictEqual(devices.validateDevice({ platform: 'tv', token: 'x' }), { error: 'platform_invalid' });
 assert.deepStrictEqual(devices.validateDevice({ platform: 'ios', token: 'short' }), { error: 'token_invalid' });
 const dv = devices.validateDevice({ platform: 'android', token: 'dGVzdA:APA91b' + 'x'.repeat(120), deviceId: 'dev-1', appVersion: '2.3.0' });
@@ -79,7 +79,7 @@ const wp = JSON.parse(webpush.buildPayload(msg));
 assert.strictEqual(wp.tag, 'campaign_1');
 assert.strictEqual(wp.data.route, 'home');
 
-// --- сегменты и рассылки ----------------------------------------------
+// --- сегменты и рассылки ----------------------------------------------------
 assert.deepStrictEqual(campaigns.normalizeSegment({ platforms: ['ios', 'tv', 'ios'], hasOrders: true, departureFrom: '2026-10-01' }).segment, { platforms: ['ios'], hasOrders: true, departureFrom: '2026-10-01' });
 assert.deepStrictEqual(campaigns.normalizeSegment({ departureTo: '01.10.2026' }), { error: 'segment_departure_invalid' });
 const sq = campaigns.segmentQuery({ platforms: ['web'], hasOrders: true, departureFrom: '2026-10-01', userIds: [1, 2] }, 'promo');
