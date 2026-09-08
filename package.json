@@ -6,8 +6,10 @@
   "scripts": {
     "start": "NODE_ENV=development node index.js",
     "dev": "nodemon index.js",
-    "check": "node --check index.js && node scripts/check-auth-core.js && node scripts/check-support-chat.js",
-    "migrate:support-chat": "node scripts/run-support-chat-migration.js"
+    "check": "node --check index.js && node scripts/check-auth-core.js && node scripts/check-support-chat.js && node scripts/check-notifications.js",
+    "migrate:support-chat": "node scripts/run-support-chat-migration.js",
+    "migrate:notifications": "node scripts/run-notifications-migration.js",
+    "vapid": "node scripts/generate-vapid-keys.js"
   },
   "dependencies": {
     "@google-cloud/text-to-speech": "^6.4.0",
@@ -23,6 +25,7 @@
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.6.0",
     "socket.io": "^4.8.1",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "web-push": "^3.6.7"
   }
 }
