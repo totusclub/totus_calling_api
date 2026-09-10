@@ -16,6 +16,10 @@
  * Support Chat (lib/supportChat.js) подключается здесь же: HTTP — через handler в POLICY
  * (как /api/ice-servers), сокет — attachSocket() в socketGate. Его роуты защищены strict-режимом
  * независимо от AUTH_MODE.
+ *
+ * Хаб уведомлений (lib/notifications) — так же: handler для /api/push*, /api/notifications*, /internal/*
+ * (роутеры сами проверяют JWT strict / X-Internal-Key), attachSocket() в socketGate, а для пропущенных
+ * звонков — tap-функции правил /api/calls* (вызываются до основного обработчика index.js, ответ не трогают).
  */
 
 const {
@@ -28,6 +32,7 @@ const {
 } = require('../lib/auth');
 const { iceServersHandler } = require('../lib/iceServers');
 const supportChat = require('../lib/supportChat');
+const notifications = require('../lib/notifications');
 
 function normLoyalty(v) {
     return String(v || '').replace(/\s+/g, '');
@@ -38,7 +43,8 @@ function normLoyalty(v) {
 // ---------------------------------------------------------------------------
 // m — метод (опц.), re — regexp по req.path, roles — допустимые роли,
 // public — без проверки, ownerUser — {param:N} | {body:'field'} (сравнение с auth.id),
-// ownerLoyalty — {body:[...fields]} (сравнение с auth.payload.loyalty_id)
+// ownerLoyalty — {body:[...fields]} (сравнение с auth.payload.loyalty_id),
+// handler — ответ формируется здесь (index.js не участвует), tap — наблюдатель (req, match) перед index.js
 const POLICY = [
     { m: 'POST', re: /^\/api\/web\/login$/, public: true },
     { re: /^\/api\/health$/, public: true },
@@ -57,7 +63,14 @@ const POLICY = [
     { re: /^\/api\/support\/chat(\/|$)/, roles: ['user'], handler: supportChat.httpHandler },
     { re: /^\/api\/support(\/|$)/, roles: ['agent', 'staff'], handler: supportChat.httpHandler },
 
+    // Хаб уведомлений (lib/notifications): роутеры сами проверяют JWT (user — устройства и центр уведомлений,
+    // staff — рассылки/напоминания/история) и X-Internal-Key для /internal/*; правило — только маршрутизация.
+    { re: /^\/(api\/push|api\/notifications|internal)(\/|$)/, public: true, handler: notifications.httpHandler },
+
     { m: 'POST', re: /^\/api\/(register-device|unregister-device)$/, roles: ['user'], ownerLoyalty: { body: ['loyaltyId', 'userId'] } },
+    // Пропущенные звонки поддержки → missed_call (tap не меняет ответ index.js)
+    { m: 'POST', re: /^\/api\/calls$/, roles: ['user'], tap: notifications.calls.onCallCreated },
+    { m: 'POST', re: /^\/api\/calls\/([^/]+)\/(answer|reject|end)$/, roles: ['user'], tap: notifications.calls.onCallAction },
     { re: /^\/api\/calls/, roles: ['user'] },
 
     { m: 'GET', re: /^\/api\/contacts\/check\/([^/]+)\/[^/]+$/, roles: ['user'], ownerUser: { param: 1 } },
@@ -130,11 +143,13 @@ function checkOwner(req, res, rule, match) {
 function httpGate(req, res, next) {
     if (req.method === 'OPTIONS') return next();
     const found = findRule(req);
-    if (!found || found.rule.public) return next();
+    if (!found) return next();
     const { rule, match } = found;
+    if (rule.public) return rule.handler ? rule.handler(req, res) : next();
     return mwFor(rule.roles)(req, res, (err) => {
         if (err) return next(err);
         if (!checkOwner(req, res, rule, match)) return;
+        if (rule.tap) { try { rule.tap(req, match); } catch (e) { console.error('[AUTH] tap failed:', e); } }
         if (rule.handler) return rule.handler(req, res);
         next();
     });
@@ -160,6 +175,8 @@ function socketGate(socket, next) {
 
     // Support Chat: комнаты и обработчики support:* (только при валидном токене)
     try { supportChat.attachSocket(socket); } catch (e) { console.error('[support-chat] attachSocket failed:', e); }
+    // Уведомления: комната u:<userId>, события notify:*, отслеживание ответа на звонок
+    try { notifications.attachSocket(socket); } catch (e) { console.error('[notify] attachSocket failed:', e); }
 
     if (!reason) return next();
     if (authMode() === 'enforce') return next(new Error('unauthorized'));
@@ -181,5 +198,7 @@ function socketLoyaltyId(socket) {
 
 // Проверка таблиц Support Chat после старта (лог-подсказка про миграцию, процесс не роняем)
 setTimeout(() => { supportChat.ensureReady().catch(() => {}); }, 3000).unref();
+// Хаб уведомлений: проверка таблиц + таймеры (отложенные пуши, запланированные рассылки, напоминания)
+notifications.start();
 
 module.exports = { httpGate, socketGate, socketLoyaltyId, POLICY, findRule };
