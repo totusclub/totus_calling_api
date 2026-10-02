@@ -64,6 +64,120 @@ const deviceSockets = new Map(); // deviceId -> socket.id
 const socketDevices = new Map(); // socket.id -> deviceId
 const loyaltyIdToDeviceId = new Map(); // loyaltyId -> deviceId (for quick lookups)
 
+// ----------------------------------------------------------------------------
+// Несколько устройств одного пользователя (телефон + вкладки сайта / панели).
+// loyaltyIdToDeviceId хранит только ПОСЛЕДНЕЕ зарегистрированное устройство: раньше
+// открытая вкладка сайта «забирала» звонок у телефона, а её фиктивный voipToken "web-…"
+// затирал в users.voipToken настоящий токен телефона (аудит calling flow, S2/S3/S6).
+// Теперь звонок идёт на все устройства: телефон — push по токену из БД, остальные —
+// по живым сокетам; отвечает первое, остальным приходит call-state 'ended'.
+// ----------------------------------------------------------------------------
+const loyaltyDevices = new Map(); // normalized loyaltyId -> Set<deviceId>
+const MAX_LOGGED_CALLER_CANDIDATES = 200;
+
+function normLoyaltyId(value) {
+  return String(value || '').replace(/\s+/g, '');
+}
+
+function addLoyaltyDevice(loyaltyId, deviceId) {
+  const key = normLoyaltyId(loyaltyId);
+  if (!key || !deviceId) return;
+  if (!loyaltyDevices.has(key)) loyaltyDevices.set(key, new Set());
+  loyaltyDevices.get(key).add(deviceId);
+}
+
+function removeLoyaltyDevice(loyaltyId, deviceId) {
+  const key = normLoyaltyId(loyaltyId);
+  const set = loyaltyDevices.get(key);
+  if (!set) return;
+  set.delete(deviceId);
+  if (!set.size) loyaltyDevices.delete(key);
+}
+
+/** Сокет действительно подключён (а не устаревшая запись в картах / БД). */
+function isLiveSocket(socketId) {
+  return Boolean(socketId) && Boolean(io.sockets.sockets.get(socketId));
+}
+
+/** Настоящий VoIP (APNs) / FCM токен телефона, а не фиктивный "web-<uuid>" веб-клиента. */
+function isPhoneVoipToken(token) {
+  const t = String(token || '').trim();
+  return Boolean(t) && !/^web-/i.test(t);
+}
+
+function isWebRegistration(platform, voipToken) {
+  return platform === 'web' || !isPhoneVoipToken(voipToken);
+}
+
+/**
+ * Куда звонить пользователю: телефон (push по токену из БД) + все живые сокеты его устройств.
+ * excludeDeviceId — устройство звонящего (не звоним сами себе).
+ */
+function resolveCallTargets(user, {toDeviceId = null, excludeDeviceId = null} = {}) {
+  const loyalty = normLoyaltyId(user.loyalty_id);
+  const sockets = [];
+  const seen = new Set();
+  const consider = (deviceId) => {
+    if (!deviceId || seen.has(deviceId) || deviceId === excludeDeviceId) return;
+    seen.add(deviceId);
+    const socketId = deviceSockets.get(deviceId);
+    if (!isLiveSocket(socketId)) return;
+    const device = devices.get(deviceId);
+    if (device && device.loyaltyId && normLoyaltyId(device.loyaltyId) !== loyalty) return; // чужое устройство
+    sockets.push({deviceId, socketId});
+  };
+  for (const deviceId of loyaltyDevices.get(loyalty) || []) consider(deviceId);
+  consider(loyaltyIdToDeviceId.get(user.loyalty_id));
+  consider(toDeviceId);
+  if (isLiveSocket(user.socketId)) consider(socketDevices.get(user.socketId));
+
+  let phone = null;
+  if (isPhoneVoipToken(user.voipToken)) {
+    const mem = devices.get(user.voipToken);
+    const platform = mem && (mem.platform === 'ios' || mem.platform === 'android')
+      ? mem.platform
+      : detectPhonePlatformFromToken(user.voipToken);
+    phone = {token: user.voipToken, platform};
+  }
+  return {phone, sockets};
+}
+
+/** call-state 'ended' остальным устройствам адресата (ответили / отклонили на другом). */
+function notifyOtherCalleeDevices(call, callId, exceptDeviceId, reason) {
+  const ids = Array.isArray(call.calleeDeviceIds) ? call.calleeDeviceIds : [];
+  for (const deviceId of ids) {
+    if (!deviceId || deviceId === exceptDeviceId) continue;
+    const socketId = deviceSockets.get(deviceId);
+    if (!isLiveSocket(socketId)) continue;
+    io.to(socketId).emit('call-state', {callId, state: 'ended', reason, by: exceptDeviceId || null});
+    console.log('[call] other callee device notified:', deviceId, 'reason=', reason);
+  }
+}
+
+/** Кандидаты звонящего, пришедшие до ответа, — заново ответившему устройству. */
+function replayCallerCandidates(call, callId, deviceId) {
+  const socketId = deviceSockets.get(deviceId);
+  const list = Array.isArray(call.callerCandidates) ? call.callerCandidates : [];
+  if (!list.length || !isLiveSocket(socketId)) return;
+  for (const candidate of list) {
+    io.to(socketId).emit('ice-candidate', {callId, candidate, fromDeviceId: call.fromDeviceId || null});
+  }
+  console.log('[answer] replayed', list.length, 'caller candidate(s) to', deviceId);
+}
+
+function logCallerCandidate(call, candidate) {
+  if (!Array.isArray(call.callerCandidates)) call.callerCandidates = [];
+  if (call.callerCandidates.length < MAX_LOGGED_CALLER_CANDIDATES) call.callerCandidates.push(candidate);
+}
+
+/** До ответа кандидаты звонящего идут на ВСЕ устройства адресата (ответить может любое). */
+function calleeTargetsForCallerCandidate(call) {
+  if (!call.answeredBy && Array.isArray(call.calleeDeviceIds) && call.calleeDeviceIds.length) {
+    return call.calleeDeviceIds;
+  }
+  return call.toDeviceId ? [call.toDeviceId] : [];
+}
+
 // ======================
 // APNs (VoIP) Provider
 // ======================
@@ -251,20 +365,29 @@ app.post('/api/register-device', async (req, res) => {
       return res.status(404).json({error: 'User not found with loyalty_id: ' + targetLoyaltyId});
     }
 
-    // Update user's voipToken and socketId in database
     const socketId = deviceSockets.get(deviceId) || null;
-    await userDb.updateUserDeviceInfo(user.id, voipToken, socketId);
+    const webDevice = isWebRegistration(platform, voipToken);
+    if (webDevice) {
+      // Вкладка сайта / панели: фиктивный voipToken "web-…" в users.voipToken НЕ пишем —
+      // иначе он затирает токен телефона того же пользователя и телефон перестаёт
+      // получать звонки (аудит S2). Веб достижим только по сокету.
+      console.log('[register-device] web device: users.voipToken is kept (phone token not overwritten)');
+    } else {
+      // socketId пишем, только если сокет есть: null затирал бы сокет другого устройства
+      await userDb.updateUserDeviceInfo(user.id, voipToken, socketId || undefined);
+    }
 
     // Also store in memory for quick access
     devices.set(deviceId, {
       userId: user.id,
       loyaltyId: user.loyalty_id,
       voipToken,
-      platform: platform || 'ios',
+      platform: webDevice ? 'web' : (platform || 'ios'),
       socketId,
     });
 
     loyaltyIdToDeviceId.set(user.loyalty_id, deviceId);
+    addLoyaltyDevice(user.loyalty_id, deviceId);
 
     // If a socket is already connected for this device, log that we see it
     if (socketId) {
@@ -317,6 +440,7 @@ app.post('/api/unregister-device', async (req, res) => {
         devices.delete(deviceIdToRemove);
       }
       loyaltyIdToDeviceId.delete(loyaltyId);
+      removeLoyaltyDevice(loyaltyId, deviceIdToRemove);
     }
 
     // Broadcast user offline
@@ -733,74 +857,51 @@ app.post('/api/calls', async (req, res) => {
   const {callId, toDeviceId, toLoyaltyId, callerName, offer, fromDeviceId, fromLoyaltyId} = req.body || {};
   console.log('callerName', callId, toDeviceId, toLoyaltyId, callerName, offer);
   
-  // Support calling by loyalty_id or deviceId
-  let targetDeviceId = toDeviceId;
-  let targetLoyaltyId = toLoyaltyId;
-  
-  // If toLoyaltyId provided, find the deviceId
-  if (!targetDeviceId && targetLoyaltyId) {
-    targetDeviceId = loyaltyIdToDeviceId.get(targetLoyaltyId) || null;
-    if (!targetDeviceId) {
-      // Try to find in database
-      try {
-        const user = await userDb.getUserDeviceInfoByLoyaltyId(targetLoyaltyId);
-        if (user && user.voipToken) {
-          // User exists but might not be in memory, we'll use voipToken directly
-          targetLoyaltyId = user.loyalty_id;
-        } else {
-          return res.status(404).json({error: 'Target user not found or not online'});
-        }
-      } catch (error) {
-        console.error('[call] error finding user:', error);
-        return res.status(500).json({error: 'Failed to find target user'});
-      }
-    }
-  }
-  
-  if (!callId || (!targetDeviceId && !targetLoyaltyId) || !offer || !offer.sdp) {
-    return res.status(400).json({error: 'callId, toDeviceId (or toLoyaltyId), and offer.sdp are required'});
+  // Адресат — пользователь целиком: телефон (push по токену из БД) + все живые сокеты
+  // его устройств (сайт, панель, приложение на экране). Раньше звонок шёл на одно
+  // «последнее» устройство, и открытая вкладка сайта забирала звонок у телефона (аудит S2/S3).
+  let targetLoyaltyId = toLoyaltyId || null;
+  if (!targetLoyaltyId && toDeviceId && devices.has(toDeviceId)) {
+    targetLoyaltyId = devices.get(toDeviceId).loyaltyId || null;
   }
 
-  // Get callee info from memory or database
-  let callee = targetDeviceId ? devices.get(targetDeviceId) : null;
-  
-  // If not in memory, get from database
-  if (!callee && targetLoyaltyId) {
-    try {
-      const user = await userDb.getUserDeviceInfoByLoyaltyId(targetLoyaltyId);
-      if (!user) {
-        return res.status(404).json({error: 'Target user not found'});
-      }
-      
-      // Prefer phone push when token exists (mobile can still have stale socketId).
-      // Web is only true when there is no phone token.
-      const isPhone = !!user.voipToken;
-      const inferredPhonePlatform = isPhone
-        ? detectPhonePlatformFromToken(user.voipToken)
-        : null;
-      const isWeb = !!user.socketId && !isPhone;
-      
-      if (!isWeb && !isPhone) {
-        return res.status(404).json({error: 'Target user not registered for calls (no socketId or voipToken)'});
-      }
-      
-      callee = {
-        userId: user.id,
-        loyaltyId: user.loyalty_id,
-        voipToken: user.voipToken || null,
-        platform: isWeb ? 'web' : (inferredPhonePlatform || 'android'),
-        socketId: user.socketId || null,
-      };
-      targetDeviceId = isWeb ? user.socketId : (user.voipToken || targetDeviceId);
-    } catch (error) {
-      console.error('[call] error getting user:', error);
-      return res.status(500).json({error: 'Failed to get target user'});
-    }
+  if (!callId || (!toDeviceId && !targetLoyaltyId) || !offer || !offer.sdp) {
+    return res.status(400).json({error: 'callId, toDeviceId (or toLoyaltyId), and offer.sdp are required'});
   }
-  
-  if (!callee) {
+  if (!targetLoyaltyId) {
     return res.status(404).json({error: 'Target device not registered'});
   }
+
+  let calleeUser = null;
+  try {
+    calleeUser = await userDb.getUserDeviceInfoByLoyaltyId(targetLoyaltyId);
+  } catch (error) {
+    console.error('[call] error getting user:', error);
+    return res.status(500).json({error: 'Failed to get target user'});
+  }
+  if (!calleeUser) {
+    return res.status(404).json({error: 'Target user not found'});
+  }
+
+  const route = resolveCallTargets(calleeUser, {toDeviceId: toDeviceId || null, excludeDeviceId: fromDeviceId || null});
+  if (!route.phone && !route.sockets.length) {
+    return res.status(404).json({error: 'Target user not registered for calls (no socketId or voipToken)'});
+  }
+
+  const callee = {
+    userId: calleeUser.id,
+    loyaltyId: calleeUser.loyalty_id,
+    voipToken: route.phone ? route.phone.token : null,
+    platform: route.phone ? route.phone.platform : 'web',
+  };
+  targetLoyaltyId = calleeUser.loyalty_id;
+  // Основное устройство (для старых клиентов, читающих toDeviceId): телефон, иначе первый сокет.
+  // После ответа становится ответившим устройством (см. /answer).
+  let targetDeviceId = route.phone ? route.phone.token : route.sockets[0].deviceId;
+  const calleeDeviceIds = Array.from(new Set([
+    ...route.sockets.map((t) => t.deviceId),
+    ...(route.phone ? [route.phone.token] : []),
+  ]));
 
   // Get caller info if we have fromLoyaltyId or fromDeviceId
   let callerLoyaltyId = fromLoyaltyId;
@@ -876,21 +977,17 @@ app.post('/api/calls', async (req, res) => {
     callerName: finalCallerName,
     offer,
     answer: null,
+    calleeDeviceIds,
+    answeredBy: null,
+    callerCandidates: [],
   });
 
-  console.log('[create-call] callId=', callId, '=> deviceId=', targetDeviceId, 'platform=', callee.platform);
+  console.log('[create-call] callId=', callId, '=> deviceId=', targetDeviceId, 'platform=', callee.platform,
+    'phone=', route.phone ? route.phone.platform : 'none', 'sockets=', route.sockets.length);
 
-  // Determine if callee is web or phone
-  // Allow calling offline users if they have voipToken (VoIP push works even when offline)
-  const calleeSocketId = callee.socketId || deviceSockets.get(targetDeviceId);
-  const isCalleeWeb = callee.platform === 'web' || !!calleeSocketId;
-  const isCalleeIOSPhone = callee.platform === 'ios' && !!callee.voipToken;
-  const isCalleeAndroidPhone = callee.platform === 'android' && !!callee.voipToken;
-
-  // For web clients: send offer via socket
-  if (isCalleeWeb && calleeSocketId) {
-    console.log('[call] Sending offer to web client via socket:', calleeSocketId);
-    io.to(calleeSocketId).emit('offer', {
+  // 1) Все живые сокеты адресата: offer + ringing (сайт, панель, приложение на экране)
+  for (const target of route.sockets) {
+    io.to(target.socketId).emit('offer', {
       callId,
       offer: {
         type: offer.type,
@@ -898,11 +995,12 @@ app.post('/api/calls', async (req, res) => {
       },
       fromDeviceId: fromDeviceId || null,
       fromLoyaltyId: callerLoyaltyId || null,
+      toLoyaltyId: callee.loyaltyId || null,
       callerName: finalCallerName,
     });
-    
+
     // Also notify about incoming call state
-    io.to(calleeSocketId).emit('call-state', {
+    io.to(target.socketId).emit('call-state', {
       callId,
       state: 'ringing',
       direction: 'incoming',
@@ -911,6 +1009,14 @@ app.post('/api/calls', async (req, res) => {
       callerName: finalCallerName,
     });
   }
+  if (route.sockets.length) {
+    console.log('[call] offer sent via socket to', route.sockets.length, 'device(s):', route.sockets.map((t) => t.deviceId).join(', '));
+  }
+
+  // 2) Телефон: push ВСЕГДА, когда есть токен, — даже если открыт сайт / панель
+  const deliveredViaSocket = route.sockets.length > 0;
+  const isCalleeIOSPhone = Boolean(route.phone) && route.phone.platform === 'ios';
+  const isCalleeAndroidPhone = Boolean(route.phone) && route.phone.platform === 'android';
 
   // For iOS phone clients: send VoIP push notification
   if (isCalleeIOSPhone) {
@@ -984,7 +1090,11 @@ app.post('/api/calls', async (req, res) => {
         targetDeviceId,
         voipToken: callee.voipToken ? `${callee.voipToken.substring(0, 20)}...` : 'null',
       });
-      res.status(500).json({error: 'APNs send failed: ' + err.message});
+      if (deliveredViaSocket) {
+        res.json({ok: true, callId, platform: 'web', pushError: 'APNs send failed: ' + err.message});
+      } else {
+        res.status(500).json({error: 'APNs send failed: ' + err.message});
+      }
     }
   } else if (isCalleeAndroidPhone) {
     // Android incoming-call wake-up via FCM data-only push (killed/background safe).
@@ -1034,9 +1144,13 @@ app.post('/api/calls', async (req, res) => {
       res.json({ok: true, callId, platform: 'android', fcmMessageId: messageId});
     } catch (err) {
       console.error('[fcm] send error', err);
-      res.status(500).json({error: 'FCM send failed: ' + err.message});
+      if (deliveredViaSocket) {
+        res.json({ok: true, callId, platform: 'web', pushError: 'FCM send failed: ' + err.message});
+      } else {
+        res.status(500).json({error: 'FCM send failed: ' + err.message});
+      }
     }
-  } else if (isCalleeWeb) {
+  } else if (deliveredViaSocket) {
     // Web client - already sent via socket above
     res.json({ok: true, callId, platform: 'web'});
   } else {
@@ -1087,7 +1201,19 @@ app.post('/api/calls/:callId/answer', (req, res) => {
     return res.status(404).json({error: 'Unknown callId'});
   }
 
+  // Звонок звонит на нескольких устройствах: принимается первый ответ, второе устройство
+  // получает 409 и завершает у себя звонок (иначе оно перехватило бы разговор).
+  if (call.answeredBy && deviceId && call.answeredBy !== deviceId) {
+    console.warn('[answer] call already answered on another device:', {callId, answeredBy: call.answeredBy, deviceId});
+    return res.status(409).json({error: 'answered_elsewhere'});
+  }
+
   call.answer = answer;
+  const firstAnswer = Boolean(deviceId) && !call.answeredBy;
+  if (firstAnswer) {
+    call.answeredBy = deviceId;
+    call.toDeviceId = deviceId; // дальше кандидаты и /end идут на ответившее устройство
+  }
   calls.set(callId, call);
 
   console.log('[answer] ✅ Answer stored for call:', callId, 'from deviceId:', deviceId);
@@ -1158,6 +1284,13 @@ app.post('/api/calls/:callId/answer', (req, res) => {
     console.log('[answer] Notified callee via socket:', calleeDeviceId);
   }
 
+  if (firstAnswer) {
+    // Остальные устройства адресата перестают звонить; ответившему — кандидаты звонящего,
+    // пришедшие до ответа (они могли уйти на другое устройство).
+    notifyOtherCalleeDevices(call, callId, deviceId, 'answered_elsewhere');
+    replayCallerCandidates(call, callId, deviceId);
+  }
+
   res.json({ok: true});
 });
 
@@ -1212,9 +1345,13 @@ app.post('/api/calls/:callId/candidate', (req, res) => {
   const call = calls.get(callId);
   if (call) {
     const fromDeviceId = from === 'caller' ? call.fromDeviceId : call.toDeviceId;
-    const toDeviceId = from === 'caller' ? call.toDeviceId : call.fromDeviceId;
-    
-    if (toDeviceId) {
+    if (from === 'caller') logCallerCandidate(call, candidate);
+    // До ответа кандидаты звонящего — на все устройства адресата, после — ответившему
+    const targets = from === 'caller'
+      ? calleeTargetsForCallerCandidate(call)
+      : (call.fromDeviceId ? [call.fromDeviceId] : []);
+
+    for (const toDeviceId of targets) {
       const toSocketId = deviceSockets.get(toDeviceId);
       if (toSocketId) {
         // Peer is connected via socket - forward immediately
@@ -1287,6 +1424,11 @@ app.post('/api/calls/:callId/reject', (req, res) => {
     }
   }
 
+  // Отклонили на одном устройстве — остальные устройства адресата перестают звонить
+  if (!call.answeredBy) {
+    notifyOtherCalleeDevices(call, callId, deviceId || null, 'rejected_elsewhere');
+  }
+
   res.json({ok: true});
 });
 
@@ -1307,16 +1449,30 @@ app.post('/api/calls/:callId/end', (req, res) => {
     return res.status(404).json({error: 'Unknown callId'});
   }
 
-  // Figure out the peer device (the other side of the call)
+  // Figure out the peer device(s) (the other side of the call)
   const {fromDeviceId, toDeviceId} = call;
-  let peerDeviceId = null;
-  if (deviceId && fromDeviceId && deviceId === fromDeviceId) {
-    peerDeviceId = toDeviceId;
-  } else if (deviceId && toDeviceId && deviceId === toDeviceId) {
-    peerDeviceId = fromDeviceId;
+  const calleeIds = Array.isArray(call.calleeDeviceIds) ? call.calleeDeviceIds : [];
+  const isCaller = Boolean(deviceId) && deviceId === fromDeviceId;
+  const isCallee = Boolean(deviceId) && !isCaller && (deviceId === toDeviceId || calleeIds.includes(deviceId));
+  let peerDeviceIds = [];
+  if (isCaller) {
+    // Звонящий положил трубку: до ответа — всем устройствам адресата, после — ответившему
+    peerDeviceIds = call.answeredBy ? [toDeviceId] : (calleeIds.length ? calleeIds : [toDeviceId]);
+  } else if (isCallee) {
+    if (call.answeredBy && deviceId !== call.answeredBy) {
+      // Устройство, на котором НЕ ответили (например, CallKit на телефоне после ответа на сайте),
+      // не должно обрывать идущий разговор
+      console.log('[call-end] ignored: device did not answer this call', deviceId);
+    } else {
+      peerDeviceIds = [fromDeviceId];
+      if (!call.answeredBy) {
+        notifyOtherCalleeDevices(call, callId, deviceId, 'rejected_elsewhere');
+      }
+    }
   }
 
-  if (peerDeviceId) {
+  for (const peerDeviceId of peerDeviceIds) {
+    if (!peerDeviceId) continue;
     const peerSocketId = deviceSockets.get(peerDeviceId);
     if (peerSocketId) {
       io.to(peerSocketId).emit('call-state', {
@@ -1375,15 +1531,19 @@ io.on('connection', socket => {
             device.socketId = socket.id;
             device.loyaltyId = user.loyalty_id;
           } else {
+            // Телефон регистрирует сокет с deviceId = своему push-токену. После рестарта сервера
+            // (карты пусты) раньше он записывался как 'web' и не получал push (аудит S6).
+            const isThisPhone = isPhoneVoipToken(user.voipToken) && user.voipToken === deviceId;
             devices.set(deviceId, {
               userId: user.id,
               loyaltyId: user.loyalty_id,
-              voipToken: user.voipToken || null,
-              platform: 'web',
+              voipToken: isThisPhone ? user.voipToken : null,
+              platform: isThisPhone ? (detectPhonePlatformFromToken(deviceId) || 'ios') : 'web',
               socketId: socket.id,
             });
           }
           loyaltyIdToDeviceId.set(user.loyalty_id, deviceId);
+          addLoyaltyDevice(user.loyalty_id, deviceId);
           
           // Broadcast user online status to all connected clients
           io.emit('user-status', {
@@ -1492,7 +1652,20 @@ io.on('connection', socket => {
 
   socket.on('ice-candidate', ({callId, candidate, fromDeviceId, toDeviceId}) => {
     console.log('[socket:ice-candidate]', callId, 'from', fromDeviceId, 'to', toDeviceId);
-    
+
+    // Кандидат звонящего до ответа — на все устройства адресата (ответить может любое)
+    const fanoutCall = callId ? calls.get(callId) : null;
+    if (fanoutCall && fromDeviceId && fromDeviceId === fanoutCall.fromDeviceId) {
+      logCallerCandidate(fanoutCall, candidate);
+      if (!fanoutCall.answeredBy && Array.isArray(fanoutCall.calleeDeviceIds) && fanoutCall.calleeDeviceIds.length > 1) {
+        for (const id of fanoutCall.calleeDeviceIds) {
+          const sid = deviceSockets.get(id);
+          if (isLiveSocket(sid)) io.to(sid).emit('ice-candidate', {callId, candidate, fromDeviceId});
+        }
+        return;
+      }
+    }
+
     // Try to find target socket by deviceId
     let toSocketId = toDeviceId ? deviceSockets.get(toDeviceId) : null;
     
@@ -1524,10 +1697,25 @@ io.on('connection', socket => {
     const deviceId = socketDevices.get(socket.id);
     console.log('[socket] Disconnect event for socket:', socket.id, 'deviceId:', deviceId);
     
+    if (deviceId && deviceSockets.get(deviceId) !== socket.id) {
+      // Устаревший сокет: устройство уже переподключилось новым сокетом. Раньше этот
+      // запоздавший disconnect стирал новую регистрацию и ставил online=0 (аудит S1).
+      socketDevices.delete(socket.id);
+      console.log('[socket] stale disconnect ignored for deviceId', deviceId, 'socket', socket.id);
+      return;
+    }
+
     if (deviceId) {
       // Update database to remove socketId and set online = 0
       const device = devices.get(deviceId);
-      if (device && device.loyaltyId) {
+      const otherLiveDevice = device && device.loyaltyId
+        ? Array.from(loyaltyDevices.get(normLoyaltyId(device.loyaltyId)) || [])
+            .some((id) => id !== deviceId && isLiveSocket(deviceSockets.get(id)))
+        : false;
+      if (otherLiveDevice) {
+        // У пользователя есть другое подключённое устройство — он остаётся онлайн
+        console.log('[socket] user still online on another device:', device.loyaltyId);
+      } else if (device && device.loyaltyId) {
         try {
           const user = await userDb.getUserByLoyaltyId(device.loyaltyId);
           if (user) {
@@ -1552,8 +1740,13 @@ io.on('connection', socket => {
       
       deviceSockets.delete(deviceId);
       socketDevices.delete(socket.id);
+      if (device) device.socketId = null;
       if (device && device.loyaltyId) {
-        loyaltyIdToDeviceId.delete(device.loyaltyId);
+        if (loyaltyIdToDeviceId.get(device.loyaltyId) === deviceId) {
+          loyaltyIdToDeviceId.delete(device.loyaltyId);
+        }
+        // Вкладку сайта / панели убираем из списка устройств; телефон остаётся (достижим по push)
+        if (device.platform === 'web') removeLoyaltyDevice(device.loyaltyId, deviceId);
       }
       console.log('Socket disconnected for deviceId', deviceId);
     } else {
