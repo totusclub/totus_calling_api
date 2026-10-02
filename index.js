@@ -2097,6 +2097,7 @@ app.post('/api/tour-assistant', async (req, res) => {
 //
 // `;
 
+
 // const DEEPSEEK_SYSTEM_PROMPT_MESSAGE = `
 // Ты профессиональный туристический агент-помощник.
 // Твоя задача - помочь пользователю заполнить объект searchParams шаг за шагом.
