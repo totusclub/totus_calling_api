@@ -12,7 +12,9 @@
 //    на закончившийся звонок можно было ответить; записи calls не удалялись;
 //  - никто не ответил — звонок висел бесконечно (у исходящего из приложения своего таймаута нет);
 //  - сбой APNs / FCM возвращался звонящему как 200 ok («гудки в никуда»), мёртвый токен не удалялся;
-//  - полный SDP в push мог не влезть в лимит APNs 5 КБ / FCM 4 КБ.
+//  - полный SDP в push мог не влезть в лимит APNs 5 КБ / FCM 4 КБ;
+//  - (02.10, e2e) повторный registerDevice того же сокета присылал 'ended' прошлого звонка в новый,
+//    поздний /end закончившегося звонка снова слал 'ended' звонящему.
 'use strict';
 
 const assert = require('assert');
@@ -434,6 +436,32 @@ check('device in an active call is not sent stale "ended" replays on reconnect',
   await again.fire('registerDevice', { deviceId: PHONE_IOS, loyaltyId: CLIENT });
   assert.strictEqual(emitsTo(again, 'call-state').length, 0);
   void phoneSock;
+}));
+
+check('repeated registerDevice from an already connected socket does NOT replay "ended" of the previous call into the new one', freshRun(async () => {
+  const PHONE_X = 'e'.repeat(64); // own token: calls of earlier scenarios stay in index.js memory
+  const phoneSock = await registerPhone(CLIENT, PHONE_X, 'ios', true);
+  const agent = await agentCaller();
+  const first = await startCall(agent.deviceId, CLIENT);
+  await call('POST', `/api/calls/${first.callId}/end`, { deviceId: agent.deviceId }); // call 1 finished
+  const second = await startCall(agent.deviceId, CLIENT);
+  world.emits = [];
+  // the app re-emits registerDevice from ensureSocketConnected() while answering call 2
+  await phoneSock.fire('registerDevice', { deviceId: PHONE_X, loyaltyId: CLIENT });
+  assert.ok(!emitsTo(phoneSock, 'call-state').some((e) => e.payload.callId === first.callId), 'no stale replay of call 1');
+  assert.strictEqual((await call('POST', `/api/calls/${second.callId}/answer`, { answer: ANSWER, deviceId: PHONE_X })).status, 200);
+}));
+
+check('late /end of an already finished call sends nothing (caller may already be in the next call)', freshRun(async () => {
+  await registerPhone(CLIENT, PHONE_IOS, 'ios', false);
+  const agent = await agentCaller();
+  const { callId } = await startCall(agent.deviceId, CLIENT);
+  await sleep(1500); // ring timeout -> missed
+  world.emits = [];
+  const r = await call('POST', `/api/calls/${callId}/end`, { deviceId: PHONE_IOS });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.alreadyFinished, 'missed');
+  assert.strictEqual(world.emits.filter((e) => e.payload && e.payload.callId === callId).length, 0);
 }));
 
 (async () => {
