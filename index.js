@@ -178,6 +178,144 @@ function calleeTargetsForCallerCandidate(call) {
   return call.toDeviceId ? [call.toDeviceId] : [];
 }
 
+// ----------------------------------------------------------------------------
+// Состояние звонка, таймаут, очистка, «мёртвые» push-токены (аудит S4, S5, P1-2).
+// Раньше у звонка не было состояния: записи в calls не удалялись, телефон продолжал звонить
+// после отбоя / ответа на другом устройстве, на звонок можно было ответить спустя минуты,
+// а сбой APNs/FCM возвращался звонящему как 200 ok («гудки в никуда»).
+// ----------------------------------------------------------------------------
+const CALL_RING_TIMEOUT_MS = Math.max(1000, Number(process.env.CALL_RING_TIMEOUT_MS) || 60000);
+const CALL_RETENTION_MS = 10 * 60 * 1000; // закончившийся звонок держим 10 мин (поздние запросы)
+const CALL_MAX_AGE_MS = 6 * 60 * 60 * 1000; // любой звонок удаляется через 6 ч
+const ENDED_REPLAY_WINDOW_MS = 3 * 60 * 1000; // кому сообщить «звонок закончился» после пробуждения
+const FINAL_CALL_STATES = new Set(['ended', 'rejected', 'missed']);
+const APNS_PAYLOAD_SOFT_LIMIT = 3800; // лимит VoIP-push 5120 байт, запас на aps и заголовки
+const FCM_DATA_SOFT_LIMIT = 3500; // лимит FCM data 4096 байт
+
+function isCallFinal(call) {
+  return Boolean(call) && FINAL_CALL_STATES.has(call.state);
+}
+
+function finishCall(callId, call, state, reason) {
+  if (!call || isCallFinal(call)) return false;
+  call.state = state;
+  call.endReason = reason || state;
+  call.endedAt = Date.now();
+  if (call.ringTimer) {
+    clearTimeout(call.ringTimer);
+    call.ringTimer = null;
+  }
+  console.log('[call-state]', callId, '->', state, 'reason=', call.endReason);
+  return true;
+}
+
+function emitToDevice(deviceId, event, payload) {
+  const socketId = deviceId ? deviceSockets.get(deviceId) : null;
+  if (!isLiveSocket(socketId)) return false;
+  io.to(socketId).emit(event, payload);
+  return true;
+}
+
+/** Никто не ответил за CALL_RING_TIMEOUT_MS: пропущенный, всем сообщить. */
+function onRingTimeout(callId) {
+  const call = calls.get(callId);
+  if (!call || call.state !== 'ringing') return;
+  finishCall(callId, call, 'missed', 'no_answer');
+  emitToDevice(call.fromDeviceId, 'call-state', {callId, state: 'ended', reason: 'no_answer', direction: 'outgoing'});
+  notifyOtherCalleeDevices(call, callId, null, 'missed');
+}
+
+function scheduleRingTimeout(callId, call) {
+  if (!call) return;
+  call.ringTimer = setTimeout(() => onRingTimeout(callId), CALL_RING_TIMEOUT_MS);
+  if (call.ringTimer && call.ringTimer.unref) call.ringTimer.unref();
+}
+
+/**
+ * Устройство подключило сокет — часто это телефон, разбуженный VoIP-push. Если звонок, ради
+ * которого его разбудили, уже закончился или принят на другом устройстве, сообщаем 'ended',
+ * чтобы CallKit / системный экран перестал звонить (отдельного «отменяющего» push у iOS нет).
+ */
+function replayFinishedCallsTo(deviceId, socketId) {
+  if (!deviceId || !socketId) return;
+  const now = Date.now();
+  // Устройство в разговоре — не трогаем (клиенты не везде сверяют callId у 'ended')
+  for (const c of calls.values()) {
+    if (c.state === 'answered' && (c.answeredBy === deviceId || c.fromDeviceId === deviceId)) return;
+  }
+  for (const [callId, c] of calls) {
+    if (!Array.isArray(c.calleeDeviceIds) || !c.calleeDeviceIds.includes(deviceId)) continue;
+    if (now - (c.createdAt || 0) > ENDED_REPLAY_WINDOW_MS) continue;
+    const answeredElsewhere = c.state === 'answered' && c.answeredBy && c.answeredBy !== deviceId;
+    if (!isCallFinal(c) && !answeredElsewhere) continue;
+    io.to(socketId).emit('call-state', {
+      callId,
+      state: 'ended',
+      reason: answeredElsewhere ? 'answered_elsewhere' : (c.endReason || c.state),
+    });
+    console.log('[call] replayed ended to woken device', deviceId, 'call', callId);
+  }
+}
+
+function sweepCalls() {
+  const now = Date.now();
+  for (const [callId, c] of calls) {
+    const endedLongAgo = isCallFinal(c) && now - (c.endedAt || 0) > CALL_RETENTION_MS;
+    const tooOld = now - (c.createdAt || now) > CALL_MAX_AGE_MS;
+    if (endedLongAgo || tooOld) {
+      if (c.ringTimer) clearTimeout(c.ringTimer);
+      calls.delete(callId);
+      callCandidates.delete(callId);
+    }
+  }
+}
+const callSweepTimer = setInterval(sweepCalls, 60 * 1000);
+if (callSweepTimer.unref) callSweepTimer.unref();
+
+const APNS_DEAD_TOKEN_REASONS = new Set(['BadDeviceToken', 'Unregistered']);
+
+function isDeadFcmTokenError(err) {
+  const code = String((err && (err.code || (err.errorInfo && err.errorInfo.code))) || '');
+  const msg = String((err && err.message) || '');
+  return code === 'messaging/registration-token-not-registered'
+    || code === 'messaging/invalid-registration-token'
+    || /not a valid FCM registration token|Requested entity was not found/i.test(msg);
+}
+
+/** APNs/FCM сказали, что токена больше нет: убрать его из users.voipToken (если он там). */
+async function forgetDeadPushToken(userId, token, reason) {
+  try {
+    const user = await userDb.getUserById(userId);
+    if (user && user.voipToken === token) {
+      await userDb.updateUserDeviceInfo(userId, null, undefined);
+    }
+    const device = devices.get(token);
+    if (device && device.platform !== 'web') device.voipToken = null;
+    console.warn('[push] dead token removed for user', userId, 'reason=', reason);
+  } catch (e) {
+    console.error('[push] failed to remove dead token:', e.message);
+  }
+}
+
+/** VoIP-push: SDP в payload только если влезает в лимит, иначе клиент берёт offer через GET. */
+function fitApnsPayload(payload) {
+  const size = Buffer.byteLength(JSON.stringify({aps: {}, ...payload}), 'utf8');
+  if (size <= APNS_PAYLOAD_SOFT_LIMIT || !payload.offer) return {payload, size, offerDropped: false};
+  const rest = {...payload};
+  delete rest.offer;
+  return {payload: rest, size: Buffer.byteLength(JSON.stringify({aps: {}, ...rest}), 'utf8'), offerDropped: true};
+}
+
+function fitFcmData(data) {
+  const sizeOf = (d) => Object.entries(d).reduce((n, [k, v]) => n + Buffer.byteLength(k) + Buffer.byteLength(String(v)), 0);
+  const size = sizeOf(data);
+  if (size <= FCM_DATA_SOFT_LIMIT || !data.offerSdp) return {data, size, offerDropped: false};
+  const rest = {...data};
+  delete rest.offerSdp;
+  delete rest.offerType;
+  return {data: rest, size: sizeOf(rest), offerDropped: true};
+}
+
 // ======================
 // APNs (VoIP) Provider
 // ======================
@@ -855,7 +993,7 @@ app.post('/api/calls/by-loyalty', async (req, res) => {
 // body: { callId, toDeviceId (or toLoyaltyId), callerName, offer: { type, sdp }, fromDeviceId?, fromLoyaltyId? }
 app.post('/api/calls', async (req, res) => {
   const {callId, toDeviceId, toLoyaltyId, callerName, offer, fromDeviceId, fromLoyaltyId} = req.body || {};
-  console.log('callerName', callId, toDeviceId, toLoyaltyId, callerName, offer);
+  console.log('[create-call] request', callId, 'to', toLoyaltyId || toDeviceId, 'offer sdp bytes=', offer && offer.sdp ? offer.sdp.length : 0);
   
   // Адресат — пользователь целиком: телефон (push по токену из БД) + все живые сокеты
   // его устройств (сайт, панель, приложение на экране). Раньше звонок шёл на одно
@@ -980,7 +1118,10 @@ app.post('/api/calls', async (req, res) => {
     calleeDeviceIds,
     answeredBy: null,
     callerCandidates: [],
+    state: 'ringing',
+    createdAt: Date.now(),
   });
+  scheduleRingTimeout(callId, calls.get(callId));
 
   console.log('[create-call] callId=', callId, '=> deviceId=', targetDeviceId, 'platform=', callee.platform,
     'phone=', route.phone ? route.phone.platform : 'none', 'sockets=', route.sockets.length);
@@ -1026,11 +1167,14 @@ app.post('/api/calls', async (req, res) => {
       // VoIP push headers
       note.pushType = 'voip';
       note.topic = APN_VOIP_TOPIC;
+      // Звонок не должен «догнать» телефон после таймаута; VoIP — немедленная доставка
+      note.expiry = Math.floor(Date.now() / 1000) + Math.ceil(CALL_RING_TIMEOUT_MS / 1000);
+      note.priority = 10;
 
       // Payload received by AppDelegate / RNVoipPushNotificationManager
       // Note: AppDelegate expects these keys: callId, handle, callerName, uuid (optional)
       // toLoyaltyId: callee's loyaltyId - client uses this to ignore pushes for other users after account switch
-      note.payload = {
+      const apnsPayload = {
         callId,
         uuid: callId, // Some libraries expect uuid field
         handle: targetDeviceId,
@@ -1043,8 +1187,12 @@ app.post('/api/calls', async (req, res) => {
           sdp: offer.sdp,
         },
       };
+      const fittedApns = fitApnsPayload(apnsPayload);
+      note.payload = fittedApns.payload;
 
       console.log('[apn] VoIP push payload:', {
+        bytes: fittedApns.size,
+        offerInPayload: !fittedApns.offerDropped,
         callId,
         handle: targetDeviceId,
         callerName: finalCallerName,
@@ -1080,7 +1228,26 @@ app.post('/api/calls', async (req, res) => {
         });
       }
 
-      res.json({ok: true, callId, apnResult: {sent: result.sent.length, failed: result.failed.length}});
+      const apnResult = {sent: result.sent.length, failed: result.failed.length};
+      if (result.sent.length === 0 && result.failed.length > 0) {
+        const failure = result.failed[0] || {};
+        const reason = (failure.response && failure.response.reason) || (failure.error && failure.error.message) || String(failure.status || 'unknown');
+        if (APNS_DEAD_TOKEN_REASONS.has(reason) || String(failure.status) === '410') {
+          forgetDeadPushToken(callee.userId, callee.voipToken, reason);
+        }
+        if (deliveredViaSocket) {
+          // Телефон не получил push, но звонок уже звонит на сайте / в панели
+          res.json({ok: true, callId, platform: 'web', pushError: 'APNs: ' + reason, apnResult});
+        } else {
+          // Честный ответ вместо 200 ok: звонящий не слушает «гудки в никуда»
+          const failedCall = calls.get(callId);
+          finishCall(callId, failedCall, 'ended', 'push_failed');
+          emitToDevice(fromDeviceId, 'call-state', {callId, state: 'ended', reason: 'unreachable', direction: 'outgoing'});
+          res.status(502).json({error: 'push_failed', reason, callId, apnResult});
+        }
+        return;
+      }
+      res.json({ok: true, callId, apnResult});
     } catch (err) {
       console.error('[apn] send error', err);
       console.error('[apn] error details:', {
@@ -1093,7 +1260,9 @@ app.post('/api/calls', async (req, res) => {
       if (deliveredViaSocket) {
         res.json({ok: true, callId, platform: 'web', pushError: 'APNs send failed: ' + err.message});
       } else {
-        res.status(500).json({error: 'APNs send failed: ' + err.message});
+        finishCall(callId, calls.get(callId), 'ended', 'push_failed');
+        emitToDevice(fromDeviceId, 'call-state', {callId, state: 'ended', reason: 'unreachable', direction: 'outgoing'});
+        res.status(502).json({error: 'push_failed', reason: 'APNs send failed: ' + err.message, callId});
       }
     }
   } else if (isCalleeAndroidPhone) {
@@ -1102,9 +1271,7 @@ app.post('/api/calls', async (req, res) => {
       if (!firebaseApp) {
         throw new Error('Firebase Admin is not initialized');
       }
-      const message = {
-        token: callee.voipToken,
-        data: {
+      const fcmData = {
           type: 'incoming_call',
           callId: toFcmDataValue(callId),
           uuid: toFcmDataValue(callId),
@@ -1117,7 +1284,11 @@ app.post('/api/calls', async (req, res) => {
           toLoyaltyId: toFcmDataValue(callee.loyaltyId || targetLoyaltyId || ''),
           offerType: toFcmDataValue(offer?.type || 'offer'),
           offerSdp: toFcmDataValue(offer?.sdp || ''),
-        },
+      };
+      const fittedFcm = fitFcmData(fcmData);
+      const message = {
+        token: callee.voipToken,
+        data: fittedFcm.data,
         android: {
           priority: 'high',
           ttl: 30000,
@@ -1132,6 +1303,8 @@ app.post('/api/calls', async (req, res) => {
         priority: message.android?.priority || null,
         ttl: message.android?.ttl || null,
         directBootOk: !!message.android?.directBootOk,
+        bytes: fittedFcm.size,
+        offerInPayload: !fittedFcm.offerDropped,
       });
 
       const messageId = await admin.messaging().send(message);
@@ -1144,10 +1317,15 @@ app.post('/api/calls', async (req, res) => {
       res.json({ok: true, callId, platform: 'android', fcmMessageId: messageId});
     } catch (err) {
       console.error('[fcm] send error', err);
+      if (isDeadFcmTokenError(err)) {
+        forgetDeadPushToken(callee.userId, callee.voipToken, (err && err.code) || 'invalid_token');
+      }
       if (deliveredViaSocket) {
         res.json({ok: true, callId, platform: 'web', pushError: 'FCM send failed: ' + err.message});
       } else {
-        res.status(500).json({error: 'FCM send failed: ' + err.message});
+        finishCall(callId, calls.get(callId), 'ended', 'push_failed');
+        emitToDevice(fromDeviceId, 'call-state', {callId, state: 'ended', reason: 'unreachable', direction: 'outgoing'});
+        res.status(502).json({error: 'push_failed', reason: 'FCM send failed: ' + err.message, callId});
       }
     }
   } else if (deliveredViaSocket) {
@@ -1201,6 +1379,12 @@ app.post('/api/calls/:callId/answer', (req, res) => {
     return res.status(404).json({error: 'Unknown callId'});
   }
 
+  // Звонок уже закончился (отбой, отклонён, никто не ответил) — ответ не принимаем
+  if (isCallFinal(call)) {
+    console.warn('[answer] call is already finished:', {callId, state: call.state, deviceId});
+    return res.status(410).json({error: 'call_ended', state: call.state});
+  }
+
   // Звонок звонит на нескольких устройствах: принимается первый ответ, второе устройство
   // получает 409 и завершает у себя звонок (иначе оно перехватило бы разговор).
   if (call.answeredBy && deviceId && call.answeredBy !== deviceId) {
@@ -1213,6 +1397,14 @@ app.post('/api/calls/:callId/answer', (req, res) => {
   if (firstAnswer) {
     call.answeredBy = deviceId;
     call.toDeviceId = deviceId; // дальше кандидаты и /end идут на ответившее устройство
+  }
+  if (call.state === 'ringing') {
+    call.state = 'answered';
+    call.answeredAt = Date.now();
+    if (call.ringTimer) {
+      clearTimeout(call.ringTimer);
+      call.ringTimer = null;
+    }
   }
   calls.set(callId, call);
 
@@ -1299,7 +1491,7 @@ app.post('/api/calls/:callId/answer', (req, res) => {
 app.get('/api/calls/:callId', (req, res) => {
   const {callId} = req.params;
   const call = calls.get(callId);
-  console.log('call', callId, call);
+  console.log('[get-call]', callId, call ? `state=${call.state || 'n/a'} hasAnswer=${Boolean(call.answer)}` : 'unknown');
 
   if (!call) {
     return res.status(404).json({error: 'Unknown callId'});
@@ -1314,6 +1506,8 @@ app.get('/api/calls/:callId', (req, res) => {
     callerName: call.callerName || null,
     offer: call.offer,
     answer: call.answer,
+    state: call.state || null,
+    endReason: call.endReason || null,
   });
 });
 
@@ -1327,7 +1521,7 @@ app.get('/api/calls/:callId', (req, res) => {
 app.post('/api/calls/:callId/candidate', (req, res) => {
   const {callId} = req.params;
   const {from, candidate} = req.body || {};
-  console.log('candidate', callId, from, candidate);
+  console.log('[candidate] received', callId, 'from=', from);
   if (!from || !candidate) {
     return res.status(400).json({error: 'from and candidate are required'});
   }
@@ -1404,6 +1598,9 @@ app.post('/api/calls/:callId/reject', (req, res) => {
   if (!call) {
     return res.status(404).json({error: 'Unknown callId'});
   }
+  if (!call.answeredBy) {
+    finishCall(callId, call, 'rejected', 'rejected');
+  }
 
   // Notify caller that call was rejected
   const callerDeviceId = call.fromDeviceId;
@@ -1456,6 +1653,7 @@ app.post('/api/calls/:callId/end', (req, res) => {
   const isCallee = Boolean(deviceId) && !isCaller && (deviceId === toDeviceId || calleeIds.includes(deviceId));
   let peerDeviceIds = [];
   if (isCaller) {
+    finishCall(callId, call, 'ended', call.state === 'answered' ? 'hangup' : 'caller_cancel');
     // Звонящий положил трубку: до ответа — всем устройствам адресата, после — ответившему
     peerDeviceIds = call.answeredBy ? [toDeviceId] : (calleeIds.length ? calleeIds : [toDeviceId]);
   } else if (isCallee) {
@@ -1465,6 +1663,7 @@ app.post('/api/calls/:callId/end', (req, res) => {
       console.log('[call-end] ignored: device did not answer this call', deviceId);
     } else {
       peerDeviceIds = [fromDeviceId];
+      finishCall(callId, call, call.state === 'answered' ? 'ended' : 'rejected', call.state === 'answered' ? 'hangup' : 'declined');
       if (!call.answeredBy) {
         notifyOtherCalleeDevices(call, callId, deviceId, 'rejected_elsewhere');
       }
@@ -1544,6 +1743,8 @@ io.on('connection', socket => {
           }
           loyaltyIdToDeviceId.set(user.loyalty_id, deviceId);
           addLoyaltyDevice(user.loyalty_id, deviceId);
+          // Проснулся от VoIP-push, а звонок уже закончился / принят на другом устройстве
+          replayFinishedCallsTo(deviceId, socket.id);
           
           // Broadcast user online status to all connected clients
           io.emit('user-status', {
