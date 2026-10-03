@@ -1652,6 +1652,11 @@ app.post('/api/calls/:callId/end', (req, res) => {
   const isCaller = Boolean(deviceId) && deviceId === fromDeviceId;
   const isCallee = Boolean(deviceId) && !isCaller && (deviceId === toDeviceId || calleeIds.includes(deviceId));
   let peerDeviceIds = [];
+  // call already finished (timeout / reject / earlier end) -> nothing to tell anyone;
+  // a late /end used to re-send 'ended' to the caller (which may already be in its NEXT call).
+  if (isCallFinal(call)) {
+    return res.json({ok: true, alreadyFinished: call.state});
+  }
   if (isCaller) {
     finishCall(callId, call, 'ended', call.state === 'answered' ? 'hangup' : 'caller_cancel');
     // Звонящий положил трубку: до ответа — всем устройствам адресата, после — ответившему
@@ -1712,7 +1717,11 @@ io.on('connection', socket => {
     
     // Use loyaltyId if provided, otherwise try userId for backward compatibility
     const targetLoyaltyId = loyaltyId || userId;
-    
+
+    // replay 'ended' only to a NEW socket of the device (woken by push / reconnected),
+    // not on every repeated registerDevice from an already registered socket (clients re-emit it
+    // from ensureSocketConnected() during an answer -> stale 'ended' of an old call killed the new one).
+    const isNewSocketForDevice = deviceSockets.get(deviceId) !== socket.id;
     deviceSockets.set(deviceId, socket.id);
     socketDevices.set(socket.id, deviceId);
     
@@ -1744,7 +1753,7 @@ io.on('connection', socket => {
           loyaltyIdToDeviceId.set(user.loyalty_id, deviceId);
           addLoyaltyDevice(user.loyalty_id, deviceId);
           // Проснулся от VoIP-push, а звонок уже закончился / принят на другом устройстве
-          replayFinishedCallsTo(deviceId, socket.id);
+          if (isNewSocketForDevice) replayFinishedCallsTo(deviceId, socket.id);
           
           // Broadcast user online status to all connected clients
           io.emit('user-status', {
