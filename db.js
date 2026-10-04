@@ -633,9 +633,18 @@ const callDeviceDb = {
         return callDeviceDb.available;
     },
 
+    /** Таблица не создалась при старте (БД ещё не готова): повторяем не чаще раза в минуту. */
+    async ensureAvailable() {
+        if (callDeviceDb.available) return true;
+        const now = Date.now();
+        if (callDeviceDb._lastTry && now - callDeviceDb._lastTry < 60000) return false;
+        callDeviceDb._lastTry = now;
+        return callDeviceDb.ensureTable();
+    },
+
     /** Телефон вошёл под пользователем (токен переезжает к новому пользователю при смене аккаунта). */
     async upsert(userId, token, platform, supportsCancel) {
-        if (!callDeviceDb.available || !userId || !token) return false;
+        if (!(await callDeviceDb.ensureAvailable()) || !userId || !token) return false;
         try {
             await pool.execute(
                 `INSERT INTO call_devices (token, user_id, platform, supports_cancel, updated_at)
@@ -653,7 +662,7 @@ const callDeviceDb = {
 
     /** Свежие телефоны пользователя (новые первыми). */
     async listByUser(userId) {
-        if (!callDeviceDb.available || !userId) return [];
+        if (!(await callDeviceDb.ensureAvailable()) || !userId) return [];
         try {
             const [rows] = await pool.execute(
                 `SELECT token, platform, supports_cancel FROM call_devices
