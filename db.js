@@ -598,7 +598,112 @@ const favoriteDb = {
     },
 };
 
-module.exports = {userDb, deviceDb, callDb, candidateDb, contactDb, favoriteDb, pool}; // pool — для lib/supportChat.js и scripts/run-support-chat-migration.js
+// ----------------------------------------------------------------------------
+// Телефоны пользователя для звонков (05.10.2026, сценарий «отбой на сайте»).
+// Раньше токен звонков был один на пользователя (users.voipToken) и его перезаписывал
+// последний открытый телефон: второй телефон в фоне / выгруженный не звонил вообще.
+// Теперь у каждого телефона своя строка: push звонка уходит на все телефоны пользователя.
+// supports_cancel = приложение умеет «отменяющий» push (type=call_ended): только таким
+// телефонам он отправляется (старое приложение показало бы его как новый входящий).
+// Таблица создаётся сама при старте (CREATE TABLE IF NOT EXISTS); если прав нет —
+// работает прежняя схема с users.voipToken.
+// ----------------------------------------------------------------------------
+const CALL_DEVICE_MAX_PER_USER = 5;
+const CALL_DEVICE_MAX_AGE_DAYS = 60;
+
+const callDeviceDb = {
+    available: false,
+
+    async ensureTable() {
+        try {
+            await pool.execute(`CREATE TABLE IF NOT EXISTS call_devices (
+                token VARCHAR(255) NOT NULL PRIMARY KEY,
+                user_id INT NOT NULL,
+                platform VARCHAR(16) NOT NULL,
+                supports_cancel TINYINT(1) NOT NULL DEFAULT 0,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                KEY idx_call_devices_user (user_id, updated_at)
+            )`);
+            callDeviceDb.available = true;
+            console.log('[call-devices] table ready');
+        } catch (error) {
+            callDeviceDb.available = false;
+            console.error('[call-devices] table not available, single users.voipToken is used:', error.message);
+        }
+        return callDeviceDb.available;
+    },
+
+    /** Телефон вошёл под пользователем (токен переезжает к новому пользователю при смене аккаунта). */
+    async upsert(userId, token, platform, supportsCancel) {
+        if (!callDeviceDb.available || !userId || !token) return false;
+        try {
+            await pool.execute(
+                `INSERT INTO call_devices (token, user_id, platform, supports_cancel, updated_at)
+                 VALUES (?, ?, ?, ?, NOW())
+                 ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), platform = VALUES(platform),
+                   supports_cancel = VALUES(supports_cancel), updated_at = NOW()`,
+                [String(token), Number(userId), String(platform || 'ios'), supportsCancel ? 1 : 0]
+            );
+            return true;
+        } catch (error) {
+            console.error('[call-devices] upsert failed:', error.message);
+            return false;
+        }
+    },
+
+    /** Свежие телефоны пользователя (новые первыми). */
+    async listByUser(userId) {
+        if (!callDeviceDb.available || !userId) return [];
+        try {
+            const [rows] = await pool.execute(
+                `SELECT token, platform, supports_cancel FROM call_devices
+                 WHERE user_id = ? AND updated_at > (NOW() - INTERVAL ${CALL_DEVICE_MAX_AGE_DAYS} DAY)
+                 ORDER BY updated_at DESC LIMIT ${CALL_DEVICE_MAX_PER_USER}`,
+                [Number(userId)]
+            );
+            return rows.map((r) => ({token: r.token, platform: r.platform, supportsCancel: Boolean(r.supports_cancel)}));
+        } catch (error) {
+            console.error('[call-devices] list failed:', error.message);
+            return [];
+        }
+    },
+
+    /** Телефон перешёл к другому пользователю: снять его токен с users.voipToken прежнего владельца. */
+    async releaseFromOtherUsers(token, userId) {
+        if (!token || !userId) return false;
+        try {
+            await pool.execute('UPDATE users SET voipToken = NULL WHERE voipToken = ? AND id <> ?', [String(token), Number(userId)]);
+            return true;
+        } catch (error) {
+            console.error('[call-devices] release failed:', error.message);
+            return false;
+        }
+    },
+
+    async remove(token) {
+        if (!callDeviceDb.available || !token) return false;
+        try {
+            await pool.execute('DELETE FROM call_devices WHERE token = ?', [String(token)]);
+            return true;
+        } catch (error) {
+            console.error('[call-devices] remove failed:', error.message);
+            return false;
+        }
+    },
+
+    async removeAllForUser(userId) {
+        if (!callDeviceDb.available || !userId) return false;
+        try {
+            await pool.execute('DELETE FROM call_devices WHERE user_id = ?', [Number(userId)]);
+            return true;
+        } catch (error) {
+            console.error('[call-devices] remove for user failed:', error.message);
+            return false;
+        }
+    },
+};
+
+module.exports = {userDb, deviceDb, callDb, candidateDb, contactDb, favoriteDb, callDeviceDb, pool}; // pool — для lib/supportChat.js и scripts/run-support-chat-migration.js
 
 
 
