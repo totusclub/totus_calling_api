@@ -1080,6 +1080,9 @@ async function resolvePhoneTargets(user, excludeDeviceId = null) {
   }
   for (const d of rows) add(d.token, d.platform, d.supportsCancel);
   add(user.voipToken, null, false);
+  // Видно в логе, на какие телефоны ушёл звонок (без таблицы call_devices — только последний открытый)
+  console.log('[call] phones of user', user.id, ':', phones.map((p) => `${p.platform}${p.supportsCancel ? '+cancel' : ''}`).join(', ') || 'none',
+    callDeviceDb.available === false ? '(call_devices unavailable)' : '');
   return phones;
 }
 
