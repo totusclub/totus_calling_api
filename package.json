@@ -6,7 +6,7 @@
   "scripts": {
     "start": "NODE_ENV=development node index.js",
     "dev": "nodemon index.js",
-    "check": "node --check index.js && node scripts/check-auth-core.js && node scripts/check-support-chat.js && node scripts/check-notifications.js && node scripts/check-multi-device-calls.js && node scripts/check-call-lifecycle.js && node scripts/check-call-end-sync.js",
+    "check": "node --check index.js && node scripts/check-auth-core.js && node scripts/check-support-chat.js && node scripts/check-notifications.js && node scripts/check-multi-device-calls.js && node scripts/check-call-lifecycle.js && node scripts/check-call-end-sync.js && node scripts/check-push-presence.js",
     "migrate:support-chat": "node scripts/run-support-chat-migration.js",
     "migrate:notifications": "node scripts/run-notifications-migration.js",
     "vapid": "node scripts/generate-vapid-keys.js"
