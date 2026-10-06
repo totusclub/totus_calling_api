@@ -523,6 +523,19 @@ const contactDb = {
 };
 
 // Favorites operations
+// hotel_data приводится к одной форме картинок ({uri} + поля сайта) при записи и при чтении —
+// lib/favoriteHotel.js (отель, добавленный на сайте, был в приложении без фото).
+const { normalizeFavoriteHotelData, MAX_IMAGES_ON_SAVE } = require('./lib/favoriteHotel');
+
+function parseFavoriteHotelData(value) {
+    if (value && typeof value === 'object') return normalizeFavoriteHotelData(value);
+    try {
+        return normalizeFavoriteHotelData(JSON.parse(value));
+    } catch (e) {
+        return {};
+    }
+}
+
 const favoriteDb = {
     // Add a hotel to favorites
     async addFavorite(userId, hotelId, hotelData) {
@@ -538,7 +551,7 @@ const favoriteDb = {
             }
 
             // Add favorite - store hotel data as JSON
-            const hotelDataJson = JSON.stringify(hotelData);
+            const hotelDataJson = JSON.stringify(normalizeFavoriteHotelData(hotelData, { maxImages: MAX_IMAGES_ON_SAVE }));
             const [result] = await pool.execute(
                 'INSERT INTO favorites (user_id, hotel_id, hotel_data, created_at) VALUES (?, ?, ?, NOW())',
                 [userId, hotelId, hotelDataJson]
@@ -574,7 +587,7 @@ const favoriteDb = {
             return rows.map(row => ({
                 id: row.id,
                 hotelId: row.hotel_id,
-                hotelData: JSON.parse(row.hotel_data),
+                hotelData: parseFavoriteHotelData(row.hotel_data),
                 createdAt: row.created_at,
             }));
         } catch (error) {
