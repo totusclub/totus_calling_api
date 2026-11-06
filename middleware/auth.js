@@ -58,8 +58,9 @@ const POLICY = [
     { re: /^\/api\/health$/, public: true },
 
     { m: 'PATCH', re: /^\/api\/users\/[^/]+\/access$/, roles: ['agent', 'staff'] },
-    // H2 аудита: профиль по id — только свой (agent/staff — любой)
-    { m: 'GET', re: /^\/api\/users\/by-id\/([^/]+)$/, roles: ['user'], ownerUser: { param: 1 }, stripContacts: true },
+    // H2 аудита: профиль по id — только свой (agent/staff — любой). 'staff' нужен явно: админка открывает
+    // клиента из списка заказов (/orders?userId=…), а роль staff не удовлетворяет требованию 'user'.
+    { m: 'GET', re: /^\/api\/users\/by-id\/([^/]+)$/, roles: ['user', 'staff'], ownerUser: { param: 1 }, stripContacts: true },
     // H2: поиск нужен, чтобы добавить контакт, — email/phone чужого пользователя обычному user не отдаём
     { m: 'GET', re: /^\/api\/users\/search\/[^/]+$/, roles: ['user'], stripContacts: true },
     { m: 'GET', re: /^\/api\/users\/([^/]+)$/, roles: ['user'], ownerLoyalty: { param: 1 }, stripContacts: true },
