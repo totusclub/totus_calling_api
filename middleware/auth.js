@@ -50,7 +50,8 @@ const POLICY = [
     { re: /^\/api\/health$/, public: true },
 
     { m: 'PATCH', re: /^\/api\/users\/[^/]+\/access$/, roles: ['agent', 'staff'] },
-    { m: 'GET', re: /^\/api\/users\/by-id\/[^/]+$/, roles: ['user'] },
+    // H2 аудита: профиль по id — только свой (agent/staff — любой)
+    { m: 'GET', re: /^\/api\/users\/by-id\/([^/]+)$/, roles: ['user'], ownerUser: { param: 1 } },
     { m: 'GET', re: /^\/api\/users\/search\/[^/]+$/, roles: ['user'] },
     { m: 'GET', re: /^\/api\/users\/([^/]+)$/, roles: ['user'], ownerLoyalty: { param: 1 } },
     { m: 'GET', re: /^\/api\/users$/, roles: ['agent', 'staff'] },
