@@ -87,7 +87,7 @@ test('lib/auth: HS512-токен отклоняется, HS256 принимае�
 
 test('POLICY: GET /api/users/by-id/:id — владелец по param 1, stripContacts', () => {
     const f = gate.findRule({ method: 'GET', path: '/api/users/by-id/42' });
-    assert.deepStrictEqual(f.rule.roles, ['user']);
+    assert.deepStrictEqual(f.rule.roles, ['user', 'staff']);
     assert.deepStrictEqual(f.rule.ownerUser, { param: 1 });
     assert.strictEqual(f.rule.stripContacts, true);
 });
@@ -178,6 +178,31 @@ test('socketMayActAs: своё устройство — да; чужое: enforc
     assert.deepStrictEqual(emitted[0][1].users, []);
     delete process.env.AUTH_MODE;
     passed += 1; console.log('ok   - get-users-status: user — свои и контакты; agent/log без токена — как раньше; enforce без токена — пусто');
+
+    // Админка (staff-токен) открывает клиента из списка заказов: в enforce — профиль целиком;
+    // ограничения для user не ослаблены (чужой — 403, без токена — 401).
+    process.env.AUTH_MODE = 'enforce';
+    const staffReq = (url) => {
+        const req = makeReq({ url });
+        req.headers.authorization = `Bearer ${authCore.signStaffToken({ id: 77, email: 'staff@example.test' })}`;
+        return req;
+    };
+    r = await run(staffReq('/api/users/by-id/2'));
+    assert.strictEqual(r.nexted, true, 'staff: by-id чужого — проходит');
+    assert.strictEqual(r.req.auth.role, 'staff');
+    assert.strictEqual(r.res.json({ user: { id: 2, email: 'b@x', phone: '8' } }).body.user.email, 'b@x', 'staff: контакты не урезаны');
+    r = await run(makeReq({ url: '/api/users/by-id/2', auth: user1 }));
+    assert.strictEqual(r.nexted, false); assert.strictEqual(r.res.statusCode, 403, 'user: чужой by-id — 403');
+    r = await run(makeReq({ url: '/api/users/by-id/1', auth: user1 }));
+    assert.strictEqual(r.nexted, true, 'user: свой by-id — проходит');
+    r = await run(makeReq({ url: '/api/users/by-id/2' }));
+    assert.strictEqual(r.nexted, false); assert.strictEqual(r.res.statusCode, 401, 'без токена — 401');
+    r = await run(staffReq('/api/users'));
+    assert.strictEqual(r.nexted, true, 'staff: /api/users — как раньше');
+    r = await run(staffReq('/api/calls'));
+    assert.strictEqual(r.nexted, false); assert.strictEqual(r.res.statusCode, 403, 'staff: пользовательские /api/calls — по-прежнему 403');
+    delete process.env.AUTH_MODE;
+    passed += 1; console.log('ok   - enforce: staff — by-id любого клиента целиком; user — только свой (чужой 403), без токена 401; staff на /api/calls — 403');
 
     console.warn = origWarn;
     console.log(`\n${passed} проверок прошло${process.exitCode ? ', есть ошибки' : ''}`);
