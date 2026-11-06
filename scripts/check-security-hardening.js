@@ -13,10 +13,17 @@ const assert = require('assert');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 
+// Тест сам задаёт все настройки, которые проверяет: lib/auth.js загружает .env сервера (dotenv), а dotenv не
+// перезаписывает уже заданные переменные. Без этого на сервере с PAID_RATE_MODE=enforce / AUTH_LOG_ONLY_PATHS /
+// TRUST_PROXY_HOPS из .env проверки падали, хотя код работал правильно.
 process.env.JWT_SECRET = 'test-secret-1234567890';
 process.env.JWT_REFRESH_SECRET = 'test-refresh-1234567890';
 process.env.PAID_RATE_LIMIT = '2';
-delete process.env.PAID_RATE_MODE;
+process.env.PAID_RATE_WINDOW_MS = '60000';
+process.env.PAID_RATE_MODE = 'log';
+process.env.AUTH_MODE = 'log';
+process.env.AUTH_LOG_ONLY_PATHS = '';
+process.env.TRUST_PROXY_HOPS = '1';
 
 const root = path.join(__dirname, '..');
 
@@ -164,6 +171,13 @@ test('socketMayActAs: своё устройство — да; чужое: enforc
     for (let i = 0; i < 3; i += 1) r = await run(makeReq({ method: 'POST', url: '/api/tour-assistant', auth: user1, body: { text: 'x' } }));
     assert.strictEqual(r.nexted, true); assert.ok(warnings.some((w) => w.includes('[RATE] paid mode=log exceeded')));
     passed += 1; console.log('ok   - httpGate: лимит платных вызовов в log-режиме пишет [RATE], пропускает');
+
+    process.env.PAID_RATE_MODE = 'enforce';
+    r = await run(makeReq({ method: 'POST', url: '/api/tour-assistant', auth: user1, body: { text: 'x' } }));
+    assert.strictEqual(r.nexted, false, 'enforce: сверх лимита запрос не пропускается');
+    assert.strictEqual(r.res.statusCode, 429); assert.deepStrictEqual(r.res.body, { error: 'too_many_requests' });
+    process.env.PAID_RATE_MODE = 'log';
+    passed += 1; console.log('ok   - httpGate: лимит платных вызовов в enforce — 429 too_many_requests');
 
     // get-users-status
     const emitted = [];
